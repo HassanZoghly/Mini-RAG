@@ -6,6 +6,7 @@ This is a minimal implemetation of a RAG Model for question answering.
 
 - .env.example ==> environment variables example file for env.
 - assets ==> folder containing images, icons etc that will help.
+- helpers.config ==> Contains the logic to load environment variables .env.
 
 
 ## Requirements
