@@ -7,7 +7,7 @@ This is a minimal implemetation of a RAG Model for question answering.
 - .env.example ==> environment variables example file for env.
 - assets ==> folder containing images, icons etc that will help.
 - helpers.config ==> Contains the logic to load environment variables .env.
-
+- any function dealing with database is async when call it must do "await" before it.
 
 ## Requirements
 
@@ -32,6 +32,29 @@ pip install -r requirements.txt
 ### Setup the environment variables
 ```bash
 cp .env.example .env
+```
+
+## Run Docker Compose Services
+
+```bash
+$ cd docker
+$ cp .env.example .env
+```
+
+- update `.env` with your credentials
+
+```bash
+$ cd docker
+$ sudo docker compose up -d
+```
+
+##### Just to check if there are services running
+```bash
+$ sudo docker stop $(sudo docker ps -aq) # stop all running containers
+$ sudo docker rm $(sudo docker ps -aq) # remove all containers
+$ sudo docker rmi $(sudo docker images -q) # remove all images
+$ sudo docker volume $(sudo docker volume ls -q) # remove all volumes
+$ sudo docker system prune --all # remove all unused containers, networks, images, and optionally, volumes.
 ```
 
 ## Running the Application

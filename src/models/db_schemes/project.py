@@ -16,3 +16,16 @@ class Project(BaseModel):
 
     # To make pydantic ignore deal with unkown types to hime like ObjectID
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @classmethod
+    def get_indexes(cls):
+
+        return [
+            {
+                "key": [
+                    ("product_id", 1) # 1 --> asending -1 --> desending
+                ],
+                "name": "product_id_index_1",
+                "unique": True
+            }
+        ]
