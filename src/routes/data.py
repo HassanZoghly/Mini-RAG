@@ -1,5 +1,3 @@
-from termios import N_MOUSE
-
 from fastapi import APIRouter, FastAPI, Depends, UploadFile, status, Request
 from fastapi.responses import JSONResponse
 import os

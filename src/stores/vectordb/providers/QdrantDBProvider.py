@@ -1,6 +1,7 @@
 from qdrant_client import models, QdrantClient
 from ..VectorDBInterface import VectorDBInterface
 from ..VectorDBEnums import DistanceMethodEnums
+from models.db_schemes import RetrievedDocument
 import logging
 
 class QdrantDBProvider(VectorDBInterface):
@@ -10,7 +11,6 @@ class QdrantDBProvider(VectorDBInterface):
         self.client = None
         self.db_path = db_path
         self.distance_method = distance_method
-
 
         if distance_method == DistanceMethodEnums.COSINE.value:
             self.distance_method = models.Distance.COSINE
@@ -73,6 +73,7 @@ class QdrantDBProvider(VectorDBInterface):
                 collection_name=collection_name,
                 records=[
                     models.Record(
+                        id=[record_id],
                         vector=vector,
                         payload={
                             "text": text, "metadata": metadata
@@ -94,16 +95,18 @@ class QdrantDBProvider(VectorDBInterface):
             metadata = [None] * len(texts)
 
         if record_ids is None:
-            record_ids = [None] * len(texts)
+            record_ids = list(range(0, len(texts)))
 
         for i in range(0, len(texts), batch_size):
 
             batch_texts = texts[i:batch_size+1]
             batch_vectors = vectors[i:batch_size+1]
             batch_metadata = metadata[i:batch_size+1]
+            batch_record_ids = record_ids[i:batch_size+1]
 
             batch_records = [
                 models.Record(
+                    id=batch_record_ids[x],
                     vector=batch_vectors[x],
                     payload={
                         "text": batch_texts, "metadata": batch_metadata
@@ -124,8 +127,19 @@ class QdrantDBProvider(VectorDBInterface):
 
     def search_by_vector(self, collection_name: str, vector: list, limit: int = 5):
 
-        return self.client.search(
+        results = self.client.search(
             collection_name=collection_name,
             query_vector=vector,
             limit=limit
         )
+
+        if not results or len(results) == 0:
+            return None
+
+        return [
+            RetrievedDocument(**{
+                "Score": result.score,
+                "Text": result.payload["text"]
+            })
+            for result in results
+        ]
