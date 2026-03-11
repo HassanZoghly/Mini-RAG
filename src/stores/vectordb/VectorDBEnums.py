@@ -1,10 +1,9 @@
-from enum import Enums
+from enum import Enum
 
-class VectorDBEnums(Enums):
+class VectorDBEnums(Enum):
 
     QDRANT = "QDRANT"
 
-class DistanceMethodEnums(Enums):
+class DistanceMethodEnums(Enum):
     COSINE = "cosine"
     DOT = "dot"
-

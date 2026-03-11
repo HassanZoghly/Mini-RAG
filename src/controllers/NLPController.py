@@ -1,6 +1,4 @@
-from xmlrpc.client import FastMarshaller
-
-from controllers import BaseController
+from .BaseController import BaseController
 from models.db_schemes import Project
 from typing import List
 from stores.llm.LLMEnums import DocumentTypeEnum
@@ -28,7 +26,7 @@ class NLPController(BaseController):
         collection_name = self.create_collection_name(project_id=project.project_id)
         collection_info = self.vectordb_client.get_collection_info(collection_name=collection_name)
 
-        return json.load(
+        return json.loads(
             json.dumps(collection_info, default=lambda x:x.__dict__)
         )
 
