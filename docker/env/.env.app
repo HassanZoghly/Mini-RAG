@@ -1,0 +1,39 @@
+APP_NAME="mini-RAG"
+
+FILE_ALLOWED_TYPES=["text/plain", "application/pdf"]
+FILE_MAX_SIZE=10
+FILE_DEFAULT_CHUNK=512000 # 512KB
+
+POSTGRES_USERNAME="postgres"
+POSTGRES_PASSWORD="postgres_password"
+POSTGRES_HOST="pgvector"
+POSTGRES_PORT=5432
+POSTGRES_MAIN_DATABASE="minirag"
+
+# ============================== LLM Config ================================
+GENERATION_BACKEND="COHERE"
+EMBEDDING_BACKEND="COHERE"
+
+OPENAI_API_KEY="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"
+OPENAI_API_URL=
+COHERE_API_KEY="FIutvzGgeCxjJRNHh7tHurjon99gmXGYy3IMVCB4"
+
+GENERATION_MODEL_ID_LITERAL=["gpt-3.5-turbo-0125", "gpt-3.5"]
+GENERATION_MODEL_ID="command-r-plus-08-2024"
+EMBEDDING_MODEL_ID="embed-multilingual-v3.0"
+EMBEDDING_MODEL_SIZE=1024
+
+INPUT_DAFAULT_MAX_CHARACTERS=1024
+GENERATION_DAFAULT_MAX_TOKENS=200
+GENERATION_DAFAULT_TEMPERATURE=0.1
+
+# ============================== Vector DB Config ================================
+VECTOR_DB_BACKEND_LITERAL=["QDRANT", "PGVECTOR"]
+VECTOR_DB_BACKEND="PGVECTOR"
+VECTOR_DB_PATH="qdrant_db"
+VECTOR_DB_DISTANCE_METHOD="cosine"
+VECTOR_DB_PGVEC_INDEX_THRESHOLD = 300
+
+# ============================== Template Config ================================
+PRIMARY_LANG = "en"
+DEAFULT_LANG = "en"
