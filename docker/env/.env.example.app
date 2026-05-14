@@ -13,6 +13,7 @@ POSTGRES_MAIN_DATABASE="minirag"
 # ============================== LLM Config ================================
 GENERATION_BACKEND="COHERE"
 EMBEDDING_BACKEND="COHERE"
+RERANKER_BACKEND="COHERE"
 
 OPENAI_API_KEY="key___"
 OPENAI_API_URL=
@@ -21,6 +22,7 @@ COHERE_API_KEY="key___"
 GENERATION_MODEL_ID_LITERAL=["gpt-3.5-turbo-0125", "gpt-3.5"]
 GENERATION_MODEL_ID="command-r-plus-08-2024"
 EMBEDDING_MODEL_ID="embed-multilingual-v3.0"
+RERANKER_MODEL_ID="rerank-multilingual-v3.0"
 EMBEDDING_MODEL_SIZE=1024
 
 INPUT_DAFAULT_MAX_CHARACTERS=1024
@@ -37,3 +39,7 @@ VECTOR_DB_PGVEC_INDEX_THRESHOLD = 300
 # ============================== Template Config ================================
 PRIMARY_LANG = "en"
 DEFAULT_LANG = "en"
+
+
+
+NAPKIN_API_KEY="key___"

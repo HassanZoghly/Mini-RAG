@@ -14,7 +14,7 @@ from models.db_schemes import DataChunk, Asset
 from models.enums.AssetTypeEnum import AssetTypeEnum
 from controllers import NLPController
 
-logger = logging.getLogger("uvicorn.error") # to show the problems of something happend
+logger = logging.getLogger("uvicorn.error")
 
 data_router = APIRouter(
     prefix="/v1/data"
@@ -23,7 +23,6 @@ data_router = APIRouter(
 @data_router.post("/upload/{project_id}")
 async def upload_data(request: Request, project_id: int, file: UploadFile,
                       app_settings: Settings = Depends(get_settings)):
-
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.db_client
@@ -57,9 +56,7 @@ async def upload_data(request: Request, project_id: int, file: UploadFile,
             while chunk := await file.read(app_settings.FILE_DEFAULT_CHUNK):
                 await f.write(chunk)
     except Exception as e:
-
         logger.error(f"Error while uploading file: {e}")
-
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
@@ -81,10 +78,11 @@ async def upload_data(request: Request, project_id: int, file: UploadFile,
 
     asset_record = await asset_model.create_asset(asset=asset_resource)
 
+    # التعديل تم هنا بنجاح وبمسافات صحيحة ليرجع اسم الملف
     return JSONResponse(
             content={
                 "signal": ResponseSignal.FILE_UPLOAD_SUCCESS.value,
-                "file_id": str(asset_record.asset_id),
+                "file_id": str(asset_record.asset_name),
             }
         )
 
@@ -134,8 +132,6 @@ async def process_endpoint(request: Request, project_id: int, process_request: P
         }
 
     else:
-
-
         project_files = await asset_model.get_all_project_assets(
             asset_project_id=project.project_id,
             asset_type=AssetTypeEnum.FILE.value,

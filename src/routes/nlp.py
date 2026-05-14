@@ -1,11 +1,14 @@
 from fastapi import FastAPI, APIRouter, status, Request
-from fastapi.responses import JSONResponse
-from routes.schemes.nlp import PushRequest, SearchRequest
+from fastapi.responses import JSONResponse, StreamingResponse
+from routes.schemes.nlp import PushRequest, SearchRequest, VisualizeRequest
 from models.ProjectModel import ProjectModel
 from models.ChunkModel import ChunkModel
 from controllers import NLPController
 from models import ResponseSignal
 from tqdm.auto import tqdm
+import os
+import httpx
+import base64
 import asyncio
 
 import logging
@@ -205,4 +208,141 @@ async def answer_rag(request: Request, project_id: int, search_request: SearchRe
             "full_prompt": full_prompt,
             "chat_history": chat_history
         }
+    )
+
+
+@nlp_router.post("/visualize")
+async def generate_visualization(request: VisualizeRequest):
+    napkin_api_key = os.getenv("NAPKIN_API_KEY")
+    if not napkin_api_key:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "signal": ResponseSignal.NAPKIN_CONFIG_ERROR.value,
+                "error": "Napkin API Key is missing"
+            }
+        )
+
+    headers = {
+        "Authorization": f"Bearer {napkin_api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "content": request.text,
+        "format": "png"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            create_res = await client.post("https://api.napkin.ai/v1/visual", json=payload, headers=headers)
+            if create_res.status_code not in [200, 201]:
+                return JSONResponse(
+                    status_code=create_res.status_code,
+                    content={
+                        "signal": ResponseSignal.NAPKIN_API_ERROR.value,
+                        "error": create_res.text
+                    }
+                )
+
+            req_id = create_res.json().get("id")
+
+            status_state = "pending"
+            status_data = {}
+            for _ in range(20):
+                await asyncio.sleep(3)
+                status_res = await client.get(f"https://api.napkin.ai/v1/visual/{req_id}/status", headers=headers)
+                status_data = status_res.json()
+                status_state = status_data.get("status")
+                if status_state != "pending":
+                    break
+
+            if status_state != "completed":
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={
+                        "signal": ResponseSignal.NAPKIN_TIMEOUT_ERROR.value,
+                        "error": "Generation failed or timed out"
+                    }
+                )
+
+            # التعديل الصحيح لاستخراج الرابط المباشر
+            generated_files = status_data.get("generated_files", [])
+
+            if not generated_files or len(generated_files) == 0:
+                return JSONResponse(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    content={
+                        "signal": ResponseSignal.NAPKIN_DOWNLOAD_ERROR.value,
+                        "error": "No files found in Napkin AI response."
+                    }
+                )
+
+            file_url = generated_files[0].get("url")
+
+            file_res = await client.get(file_url, headers=headers)
+
+            if file_res.status_code == 200:
+                img_base64 = base64.b64encode(file_res.content).decode("utf-8")
+                return JSONResponse(
+                    content={
+                        "signal": ResponseSignal.NAPKIN_SUCCESS.value,
+                        "image_base64": img_base64
+                    }
+                )
+            else:
+                return JSONResponse(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    content={
+                        "signal": ResponseSignal.NAPKIN_DOWNLOAD_ERROR.value,
+                        "error": f"Failed to download image. HTTP {file_res.status_code}: {file_res.text}"
+                    }
+                )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "signal": ResponseSignal.NAPKIN_INTERNAL_ERROR.value,
+                "error": str(e)
+            }
+        )
+
+
+@nlp_router.post("/quiz/{project_id}")
+async def get_quiz(request: Request, project_id: int):
+    # (نفس خطوات الـ RAG للوصول للـ Project)
+    project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
+    project = await project_model.get_project_or_create_one(project_id=project_id)
+
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+
+    quiz = await nlp_controller.generate_quiz(project=project)
+
+    if not quiz:
+        return JSONResponse(status_code=400, content={"signal": "quiz_error"})
+
+    return JSONResponse(content={"signal": "quiz_success", "quiz": quiz})
+
+
+@nlp_router.post("/index/answer_stream/{project_id}")
+async def answer_rag_stream(request: Request, project_id: int, search_request: SearchRequest):
+    project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
+    project = await project_model.get_project_or_create_one(project_id=project_id)
+
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+
+    return StreamingResponse(
+        nlp_controller.answer_rag_question_stream(project=project, query=search_request.text, limit=search_request.limit),
+        media_type="text/event-stream"
     )

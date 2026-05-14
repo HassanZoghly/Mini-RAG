@@ -1,66 +1,96 @@
 # Mini RAG
 
-This is a minimal implemetation of a RAG Model for question answering.
+A modular Retrieval-Augmented Generation (RAG) app with:
+- FastAPI backend for upload, processing, indexing, and Q&A
+- PostgreSQL + PGVector/Qdrant support
+- Streamlit web UI for PDF ingestion and chat
 
-## What to know?
+## 1) Environment Setup
 
-- .env.example ==> environment variables example file for env.
-- assets ==> folder containing images, icons etc that will help.
-- helpers.config ==> Contains the logic to load environment variables .env.
-- any function dealing with database is async when call it must do "await" before it.
-
-## Requirements
-
-- Python 3.8+
-- Conda
-1. Create a new environment using the following command:
+1. Create and activate environment:
 ```bash
-conda create -n mini-rag python=3.8
-```
-2. Activate the environment:
-```bash
+conda create -n mini-rag python=3.8 -y
 conda activate mini-rag
 ```
 
-## Installation
-
-### Install the required packages
+2. Install dependencies:
 ```bash
+cd src
 pip install -r requirements.txt
 ```
 
-### Setup the environment variables
+3. Create backend env file:
 ```bash
 cp .env.example .env
 ```
 
-## Run Docker Compose Services
+4. Fill `.env` with DB + model provider credentials.
 
+## 2) Start Infrastructure (Docker)
+
+From repository root:
 ```bash
-$ cd docker
-$ cp .env.example .env
+cd docker
+cp env/.env.example.postgres env/.env.postgres
+cp env/.env.example.app env/.env.app
+# optional: cp env/.env.example.grafana env/.env.grafana
+# optional: cp env/.env.example.postgres-exporter env/.env.postgres-exporter
 ```
 
-- update `.env` with your credentials
-
+Update the copied env files, then start services:
 ```bash
-$ cd docker
-$ sudo docker compose up -d
+docker compose up -d
 ```
 
-##### Just to check if there are services running
+## 3) Run Database Migrations
+
+From `src/models/db_schemes/minirag`:
 ```bash
-$ sudo docker stop $(sudo docker ps -aq) # stop all running containers
-$ sudo docker rm $(sudo docker ps -aq) # remove all containers
-$ sudo docker rmi $(sudo docker images -q) # remove all images
-$ sudo docker volume $(sudo docker volume ls -q) # remove all volumes
-$ sudo docker system prune --all # remove all unused containers, networks, images, and optionally, volumes.
+cp alembic.ini.example alembic.ini
 ```
 
-## Running the Application
+Update `alembic.ini` (`sqlalchemy.url`), then run:
+```bash
+alembic upgrade head
+```
 
+## 4) Run FastAPI + Streamlit Concurrently
+
+Open two terminals from `src`.
+
+Terminal 1 (FastAPI):
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 5000
 ```
-- Access the application at `http://localhost:5000`.
-- host give access from other devices in the network.
+
+Terminal 2 (Streamlit UI):
+```bash
+streamlit run ui/app.py --server.port 8501
+```
+
+Or run both with one command from repository root:
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+Optional: run migrations before startup in the same command:
+```bash
+RUN_MIGRATIONS=1 ./run.sh
+```
+
+## 5) Use the App
+
+1. Open Streamlit: `http://localhost:8501`
+2. In sidebar:
+   - Set FastAPI URL (default `http://localhost:5000`)
+   - Upload PDF
+   - Click `Process + Index`
+3. In main chat, ask questions about your indexed documents.
+
+## API Endpoints Used by the UI
+
+- `POST /v1/data/upload/{project_id}`
+- `POST /v1/data/process/{project_id}`
+- `POST /v1/nlp/index/push/{project_id}`
+- `POST /v1/nlp/index/answer/{project_id}`

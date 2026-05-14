@@ -4,6 +4,7 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy import Index
 from pydantic import BaseModel
+from typing import Dict, Any, Optional
 import uuid
 
 class DataChunk(SQLAlchemyBase):
@@ -34,3 +35,7 @@ class DataChunk(SQLAlchemyBase):
 class RetrievedDocument(BaseModel):
     text: str
     score: float
+    # ----------- التعديلات هنا -----------
+    metadata: Dict[str, Any] = {}
+    # ضفنا id اختياري عشان لو قاعدة البيانات رجعته مستقبلاً الكود ميضربش
+    id: Optional[str] = None

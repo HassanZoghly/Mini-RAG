@@ -17,6 +17,8 @@ alembic==1.18.4
 psycopg2-binary==2.9.11
 pgvector==0.4.2
 nltk==3.9.3
+streamlit==1.45.1
+requests==2.32.3
 
 # Monitoring and metrics
 prometheus-client==0.24.1
