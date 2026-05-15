@@ -29,6 +29,11 @@ conda activate mini-rag
 pip install -r requirements.txt
 ```
 
+### System Dependencies
+If you want to use the OCR features for Images and Scanned PDFs, you must install Tesseract OCR on your system.
+* Ubuntu/Debian: `sudo apt-get install tesseract-ocr`
+* MacOS: `brew install tesseract`
+
 ### Setup the environment variables
 ```bash
 cp .env.example .env
