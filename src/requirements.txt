@@ -19,6 +19,8 @@ pgvector==0.4.2
 nltk==3.9.3
 streamlit==1.45.1
 requests==2.32.3
+pytesseract==0.3.13
+pdf2image==1.17.0
 
 # Monitoring and metrics
 prometheus-client==0.24.1

@@ -311,7 +311,6 @@ async def generate_visualization(request: VisualizeRequest):
 
 @nlp_router.post("/quiz/{project_id}")
 async def get_quiz(request: Request, project_id: int):
-    # (نفس خطوات الـ RAG للوصول للـ Project)
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
 
@@ -328,6 +327,26 @@ async def get_quiz(request: Request, project_id: int):
         return JSONResponse(status_code=400, content={"signal": "quiz_error"})
 
     return JSONResponse(content={"signal": "quiz_success", "quiz": quiz})
+
+@nlp_router.post("/summarize/{project_id}")
+async def get_summary(request: Request, project_id: int):
+    project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
+    project = await project_model.get_project_or_create_one(project_id=project_id)
+
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+
+    # Streaming — prevents read timeout on large/OCR-scanned lectures.
+    # The client receives text chunks word-by-word instead of waiting for the
+    # full response, exactly like answer_stream does for chat.
+    return StreamingResponse(
+        nlp_controller.generate_summary_stream(project=project, limit=15),
+        media_type="text/event-stream",
+    )
 
 
 @nlp_router.post("/index/answer_stream/{project_id}")

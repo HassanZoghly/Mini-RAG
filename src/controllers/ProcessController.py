@@ -14,6 +14,8 @@ from models import ProcessingEnum
 from .BaseController import BaseController
 from .ProjectController import ProjectController
 
+import pytesseract
+from pdf2image import convert_from_path
 
 @dataclass
 class Document:
@@ -143,7 +145,20 @@ class ProcessController(BaseController):
             for page_index, page in enumerate(doc):
                 page_markdown = self.extract_page_markdown(page=page)
                 cleaned_markdown = self.clean_markdown_text(page_markdown)
-                if not cleaned_markdown:
+
+                # Fallback: if fitz returned almost nothing, the page is likely
+                # a scanned image — run OCR on that specific page only.
+                if len(cleaned_markdown.strip()) < 50:
+                    print(
+                        f"[ProcessController] Page {page_index + 1} has < 50 chars "
+                        f"after fitz extraction — running OCR fallback..."
+                    )
+                    cleaned_markdown = self._extract_page_via_ocr(
+                        file_path=file_path,
+                        page_number=page_index + 1,  # 1-based for pdf2image
+                    )
+
+                if not cleaned_markdown.strip():
                     continue
 
                 pages.append(Document(
@@ -157,6 +172,38 @@ class ProcessController(BaseController):
             doc.close()
 
         return pages
+
+    def _extract_page_via_ocr(self, file_path: str, page_number: int) -> str:
+        """
+        Convert a single PDF page to an image and run Tesseract OCR on it.
+        Uses first_page / last_page so only the target page is loaded into memory,
+        keeping large PDFs efficient.
+
+        Args:
+            file_path:   Absolute path to the PDF file.
+            page_number: 1-based page index to process.
+
+        Returns:
+            Extracted text string (empty string if the page is blank/unreadable).
+        """
+        try:
+            images = convert_from_path(
+                file_path,
+                first_page=page_number,
+                last_page=page_number,
+            )
+
+            ocr_parts = []
+            for img in images:
+                text = pytesseract.image_to_string(img, lang="eng+ara")
+                if text.strip():
+                    ocr_parts.append(text)
+
+            return "\n\n".join(ocr_parts)
+
+        except Exception as e:
+            print(f"[ProcessController] OCR failed for page {page_number}: {e}")
+            return ""
 
     def extract_page_markdown(self, page) -> str:
         page_dict = page.get_text("dict", sort=True)

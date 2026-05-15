@@ -25,7 +25,6 @@ def stream_answer(query: str):
             yield f"- **Error**: HTTP {response.status_code} - {response.text}"
             return
 
-        # قراءة الداتا قطعة قطعة وتمريرها للواجهة
         for chunk in response.iter_content(chunk_size=1024, decode_unicode=True):
             if chunk:
                 yield chunk
@@ -129,6 +128,8 @@ def main() -> None:
             st.divider()
 
             st.subheader("Learning Tools")
+
+            # زر الكويز
             if st.button("📝 Generate Quiz", use_container_width=True, type="primary"):
                 with st.spinner("Creating a quiz from your lecture..."):
                     try:
@@ -142,6 +143,36 @@ def main() -> None:
                                 st.error("Received empty response from the server.")
                         else:
                             st.error(f"Could not generate quiz. Server returned: {res.status_code}")
+                    except Exception as e:
+                        st.error(f"Connection Error: {e}")
+
+            # زر التلخيص — Streaming عشان منحصلش timeout مع المحاضرات الكبيرة أو الـ OCR
+            if st.button("📄 Summarize Lecture", use_container_width=True, type="secondary"):
+                with st.spinner("Starting summary generation..."):
+                    try:
+                        response = requests.post(
+                            f"{API_URL}/v1/nlp/summarize/{PROJECT_ID}",
+                            stream=True,
+                            timeout=REQUEST_TIMEOUT,
+                        )
+                        if response.status_code >= 400:
+                            st.error(f"Could not generate summary. Server returned: {response.status_code}")
+                        else:
+                            # نعرض الـ summary وهي بتتكتب word by word زي الـ chat
+                            with st.chat_message("assistant"):
+                                full_summary = st.write_stream(
+                                    chunk
+                                    for chunk in response.iter_content(chunk_size=None, decode_unicode=True)
+                                    if chunk
+                                )
+                            if full_summary:
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": f"**Lecture Summary:**\n\n{full_summary}",
+                                })
+                                st.rerun()
+                            else:
+                                st.error("Received empty response from the server.")
                     except Exception as e:
                         st.error(f"Connection Error: {e}")
 
@@ -185,26 +216,21 @@ def main() -> None:
         user_prompt = st.chat_input("Type your question here...")
 
         if user_prompt:
-            # 1. إضافة وعرض رسالة المستخدم
             st.session_state.messages.append({"role": "user", "content": user_prompt})
             with st.chat_message("user"):
                 st.markdown(user_prompt, unsafe_allow_html=False)
 
-            # 2. عرض رسالة الموديل بنظام الـ Streaming 🚀
             with st.chat_message("assistant"):
                 try:
-                    # st.write_stream هتقرأ من الـ generator وتطبع حرف بحرف فوراً
                     answer = st.write_stream(stream_answer(user_prompt))
                 except Exception as exc:
                     answer = f"- **Error**: {exc}"
                     st.markdown(answer)
 
-                # لو الرد رجع فاضي لأي سبب
                 if not answer:
                     answer = "Sorry, I could not find an answer in this document."
                     st.markdown(answer)
 
-            # 3. حفظ الرد النهائي في الجلسة وعمل ريفرش عشان زرار الـ Napkin يظهر
             st.session_state.messages.append({"role": "assistant", "content": answer})
             st.rerun()
 

@@ -96,12 +96,10 @@ class NLPController(BaseController):
         )
         return results
 
-    # دالة مساعدة لتطبيق الـ Reranker
     def _rerank_documents(self, query: str, retrieved_documents: list, top_n: int):
         if not retrieved_documents:
             return []
 
-        # التأكد من أن الكلاينت يدعم الـ Reranker (عشان لو نقلنا لموديل تاني مستقبلاً الكود ميضربش)
         if not hasattr(self.generation_client, "rerank"):
             return retrieved_documents[:top_n]
 
@@ -110,7 +108,6 @@ class NLPController(BaseController):
         try:
             reranked_texts = self.generation_client.rerank(query=query, documents=docs_texts, top_n=top_n)
 
-            # إنشاء كائنات وهمية للحفاظ على التوافق مع باقي الكود
             class DummyDoc:
                 def __init__(self, text):
                     self.text = text
@@ -120,32 +117,17 @@ class NLPController(BaseController):
             return retrieved_documents[:top_n]
 
     async def answer_rag_question(self, project: Project, query: str, limit: int = 10):
-        # نسحب أضعاف العدد المطلوب من الداتا بيز (مثلاً لو limit=5 هنسحب 15)
         fetch_limit = limit * 3
         retrieved_documents = await self.search_vector_db_collection(
             project=project, text=query, limit=fetch_limit,
         )
 
-        # نطبق الـ Reranker عشان يختار أفضل `limit` فقط
         retrieved_documents = self._rerank_documents(query=query, retrieved_documents=retrieved_documents, top_n=limit)
 
         if not retrieved_documents or len(retrieved_documents) == 0:
             return None, None, None
 
         system_prompt = self.template_parser.get("rag", "system_prompt")
-
-        system_prompt = "\n".join([
-            system_prompt.strip(),
-            "",
-            "Output format requirements (strict):",
-            "- Return your full answer as clean GitHub-flavored Markdown only.",
-            "- Use bullet points (`- item`) for every list; do not use numbered lists unless explicitly requested.",
-            "- Use bold text (`**text**`) only for key emphasis (terms, warnings, conclusions).",
-            "- If context includes code, format it with fenced code blocks and a language tag when known.",
-            "- If context is tabular, render it as a valid Markdown table with header and separator rows.",
-            "- Do not output HTML.",
-            "- Keep the response concise and grounded only in retrieved documents.",
-        ])
 
         documents_prompts = "\n".join([
             self.template_parser.get("rag", "document_prompt", {
@@ -180,19 +162,6 @@ class NLPController(BaseController):
             return
 
         system_prompt = self.template_parser.get("rag", "system_prompt")
-
-        system_prompt = "\n".join([
-            system_prompt.strip(),
-            "",
-            "Output format requirements (strict):",
-            "- Return your full answer as clean GitHub-flavored Markdown only.",
-            "- Use bullet points (`- item`) for every list; do not use numbered lists unless explicitly requested.",
-            "- Use bold text (`**text**`) only for key emphasis (terms, warnings, conclusions).",
-            "- If context includes code, format it with fenced code blocks and a language tag when known.",
-            "- If context is tabular, render it as a valid Markdown table with header and separator rows.",
-            "- Do not output HTML.",
-            "- Keep the response concise and grounded only in retrieved documents.",
-        ])
 
         documents_prompts = "\n".join([
             self.template_parser.get("rag", "document_prompt", {
@@ -239,5 +208,98 @@ class NLPController(BaseController):
 
         full_prompt = "\n\n".join([documents_prompts, footer_prompt])
 
-        quiz = self.generation_client.generate_text(prompt=full_prompt, chat_history=chat_history)
+        quiz = self.generation_client.generate_text(
+            prompt=full_prompt,
+            chat_history=chat_history,
+            max_output_tokens=2000
+        )
         return quiz
+
+    async def generate_summary(self, project: Project, limit: int = 15):
+        query_text = "overview, main concepts, summary, introduction, conclusion, important details"
+        fetch_limit = limit * 2
+        retrieved_documents = await self.search_vector_db_collection(
+            project=project,
+            text=query_text,
+            limit=fetch_limit,
+        )
+
+        retrieved_documents = self._rerank_documents(query=query_text, retrieved_documents=retrieved_documents, top_n=limit)
+
+        if not retrieved_documents:
+            return None
+
+        documents_prompts = "\n".join([
+            self.template_parser.get("rag", "document_prompt", {
+                "doc_num": idx + 1,
+                "chunk_text": getattr(doc, "text", ""),
+            })
+            for idx, doc in enumerate(retrieved_documents)
+        ])
+
+        system_prompt = self.template_parser.get("rag", "summarize_system_prompt")
+        footer_prompt = self.template_parser.get("rag", "summarize_footer_prompt")
+
+        chat_history = [
+            self.generation_client.construct_prompt(prompt=system_prompt, role=self.generation_client.enums.SYSTEM.value)
+        ]
+
+        full_prompt = "\n\n".join([documents_prompts, footer_prompt])
+
+        summary = self.generation_client.generate_text(
+                prompt=full_prompt,
+                chat_history=chat_history,
+                max_output_tokens=4000
+        )
+        return summary
+
+    async def generate_summary_stream(self, project: Project, limit: int = 15):
+        """
+        Streaming version of generate_summary.
+        Yields text chunks word-by-word so the client never hits a read timeout,
+        even when the source document is entirely OCR-scanned and the LLM response
+        is long (max_output_tokens=4000).
+        """
+        query_text = "overview, main concepts, summary, introduction, conclusion, important details"
+        fetch_limit = limit * 2
+        retrieved_documents = await self.search_vector_db_collection(
+            project=project,
+            text=query_text,
+            limit=fetch_limit,
+        )
+
+        retrieved_documents = self._rerank_documents(
+            query=query_text,
+            retrieved_documents=retrieved_documents,
+            top_n=limit,
+        )
+
+        if not retrieved_documents:
+            yield "I could not find enough information in the provided documents to generate a summary."
+            return
+
+        documents_prompts = "\n".join([
+            self.template_parser.get("rag", "document_prompt", {
+                "doc_num": idx + 1,
+                "chunk_text": getattr(doc, "text", ""),
+            })
+            for idx, doc in enumerate(retrieved_documents)
+        ])
+
+        system_prompt = self.template_parser.get("rag", "summarize_system_prompt")
+        footer_prompt = self.template_parser.get("rag", "summarize_footer_prompt")
+
+        chat_history = [
+            self.generation_client.construct_prompt(
+                prompt=system_prompt,
+                role=self.generation_client.enums.SYSTEM.value,
+            )
+        ]
+
+        full_prompt = "\n\n".join([documents_prompts, footer_prompt])
+
+        for chunk in self.generation_client.generate_stream(
+            prompt=full_prompt,
+            chat_history=chat_history,
+        ):
+            yield chunk
