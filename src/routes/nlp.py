@@ -194,3 +194,59 @@ async def answer_rag(request: Request, project_id: str, search_request: SearchRe
             "chat_history": chat_history
         }
     )
+
+@nlp_router.post("/index/summarize/{project_id}")
+async def summarize_lecture(request: Request, project_id: str):
+    project_model = await ProjectModel.create_instance(
+        db_client=request.app.db_client
+    )
+
+    project = await project_model.get_project_or_create_one(
+        project_id=project_id
+    )
+
+    chunk_model = await ChunkModel.create_instance(
+        db_client=request.app.db_client
+    )
+
+    # Fetch chunks (for simplicity, we grab the first 50 chunks which should fit in a good context window)
+    chunks = await chunk_model.get_project_chunks(project_id=project.id, page_no=1)
+    # We might want to get more, let's grab page 2 as well if it exists to make sure we have enough
+    more_chunks = await chunk_model.get_project_chunks(project_id=project.id, page_no=2)
+    if more_chunks:
+        chunks.extend(more_chunks)
+
+    if not chunks:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "signal": "NO_CHUNKS_FOUND"
+            }
+        )
+
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+
+    answer = nlp_controller.summarize_lecture(
+        project=project,
+        chunks=chunks
+    )
+
+    if not answer:
+        return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "signal": "SUMMARIZATION_ERROR"
+                }
+        )
+
+    return JSONResponse(
+        content={
+            "signal": "SUMMARIZATION_SUCCESS",
+            "summary": answer
+        }
+    )

@@ -85,14 +85,41 @@ class NLPController(BaseController):
 
         answer, full_prompt, chat_history = None, None, None
 
+        # Fetch more documents initially for re-ranking
         retrieved_document = self.search_vector_db_collection(
             project=project,
             text=query,
-            limit=limit
+            limit=limit * 3
         )
 
         if not retrieved_document or len(retrieved_document) == 0:
             return answer, full_prompt, chat_history
+
+        # Rerank documents using Cohere if the embedding/generation client is Cohere
+        # We can extract the underlying cohere client if it exists.
+        reranked_documents = retrieved_document
+        if hasattr(self.embedding_client, 'client') and self.embedding_client.__class__.__name__ == 'CoHereProvider':
+            try:
+                cohere_client = self.embedding_client.client
+                docs_texts = [doc.text for doc in retrieved_document]
+
+                # Using English rerank model by default for educational RAG
+                rerank_results = cohere_client.rerank(
+                    query=query,
+                    documents=docs_texts,
+                    top_n=limit,
+                    model='rerank-english-v3.0'
+                )
+
+                # Re-order the retrieved_document list based on rerank results
+                reranked_documents = []
+                for result in rerank_results.results:
+                    reranked_documents.append(retrieved_document[result.index])
+            except Exception as e:
+                print(f"Error during reranking: {e}")
+                reranked_documents = retrieved_document[:limit]
+        else:
+            reranked_documents = retrieved_document[:limit]
 
         system_prompt = self.template_parser.get("rag", "system_prompt")
 
@@ -101,7 +128,7 @@ class NLPController(BaseController):
                     "doc_num": idx + 1,
                     "chunk_text": doc.text
                 })
-            for idx, doc in enumerate(retrieved_document)
+            for idx, doc in enumerate(reranked_documents)
         ])
 
         footer_prompt = self.template_parser.get("rag", "footer_prompt", {
@@ -123,3 +150,29 @@ class NLPController(BaseController):
         )
 
         return answer, full_prompt, chat_history
+
+    def summarize_lecture(self, project: Project, chunks: List[DataChunk]):
+        if not chunks:
+            return None
+
+        # Combine chunks into a single text block
+        # We assume the chunks fit into the LLM context window for a summary
+        lecture_text = "\n".join([c.chunk_text for c in chunks])
+
+        system_prompt = "You are an expert tutor and summarizer. Please provide a comprehensive and structured summary of the following lecture material. Your response MUST be formatted in Markdown (use headings, bullet points, and bold text)."
+
+        chat_history = [
+            self.generation_client.construct_prompt(
+                prompt=system_prompt,
+                role=self.generation_client.enums.SYSTEM.value,
+            )
+        ]
+
+        full_prompt = f"Please summarize the following lecture material:\n\n{lecture_text}\n\nSummary:"
+
+        answer = self.generation_client.generate_text(
+            prompt=full_prompt,
+            chat_history=chat_history
+        )
+
+        return answer

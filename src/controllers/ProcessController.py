@@ -4,7 +4,43 @@ import os
 from langchain_community.document_loaders import TextLoader
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 from models import ProcessingEnum
+import pytesseract
+from PIL import Image
+import fitz
+
+class ImageLoader:
+    def __init__(self, file_path):
+        self.file_path = file_path
+
+    def load(self):
+        try:
+            image = Image.open(self.file_path)
+            text = pytesseract.image_to_string(image)
+            return [Document(page_content=text, metadata={"source": self.file_path, "page": 1})]
+        except Exception as e:
+            print(f"Error extracting text from image {self.file_path}: {e}")
+            return []
+
+class EnhancedPyMuPDFLoader(PyMuPDFLoader):
+    def load(self):
+        docs = super().load()
+        for doc in docs:
+            # If the extracted text is too short, it might be a scanned page. Let's try OCR.
+            if len(doc.page_content.strip()) < 50:
+                try:
+                    pdf_doc = fitz.open(self.file_path)
+                    page_num = doc.metadata.get("page", 0)
+                    page = pdf_doc.load_page(page_num)
+                    pix = page.get_pixmap()
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    text = pytesseract.image_to_string(img)
+                    if len(text.strip()) > len(doc.page_content.strip()):
+                        doc.page_content = text
+                except Exception as e:
+                    print(f"Error performing OCR on PDF page {self.file_path}: {e}")
+        return docs
 
 class ProcessController(BaseController):
 
@@ -32,7 +68,10 @@ class ProcessController(BaseController):
             return TextLoader(file_path, encoding="utf-8")
 
         if file_ext == ProcessingEnum.PDF.value:
-            return PyMuPDFLoader(file_path)
+            return EnhancedPyMuPDFLoader(file_path)
+
+        if file_ext in [ProcessingEnum.PNG.value, ProcessingEnum.JPG.value, ProcessingEnum.JPEG.value]:
+            return ImageLoader(file_path)
 
         return None
 
