@@ -1,6 +1,8 @@
-from fastapi import FastAPI, APIRouter, status, Request
+from fastapi import FastAPI, APIRouter, status, Request, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-from routes.schemes.nlp import PushRequest, SearchRequest, VisualizeRequest
+from routes.schemes.nlp import PushRequest, SearchRequest, VisualizeRequest, AgentQueryRequest, AgentQueryResponse
+from agents.base import create_initial_state
+import json
 from models.ProjectModel import ProjectModel
 from models.ChunkModel import ChunkModel
 from controllers import NLPController
@@ -365,3 +367,74 @@ async def answer_rag_stream(request: Request, project_id: int, search_request: S
         nlp_controller.answer_rag_question_stream(project=project, query=search_request.text, limit=search_request.limit),
         media_type="text/event-stream"
     )
+
+@nlp_router.post("/agent-query", response_model=AgentQueryResponse)
+async def agent_query(request: Request, query_request: AgentQueryRequest):
+    """
+    Process a multi-agent RAG query.
+    """
+    try:
+        initial_state = create_initial_state(
+            query=query_request.query,
+            project_id=query_request.project_id,
+            asset_ids=query_request.asset_ids,
+            image_paths=query_request.image_paths
+        )
+        initial_state["metadata"]["session_id"] = query_request.session_id
+
+        result = await request.app.agent_graph.run(initial_state)
+        
+        # Save interaction via memory agent
+        memory_agent = request.app.agent_graph._memory
+        await memory_agent.save_interaction(result)
+        
+        return AgentQueryResponse(
+            response=result.get("final_response", ""),
+            agent_trace=result.get("agent_trace", []),
+            retrieved_chunks=result.get("retrieved_chunks", []),
+            session_id=query_request.session_id
+        )
+    except Exception as e:
+        logger.error(f"Agent query error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@nlp_router.post("/agent-query/stream")
+async def agent_query_stream(request: Request, query_request: AgentQueryRequest):
+    """
+    Process a multi-agent RAG query with a streaming response.
+    """
+    initial_state = create_initial_state(
+        query=query_request.query,
+        project_id=query_request.project_id,
+        asset_ids=query_request.asset_ids,
+        image_paths=query_request.image_paths
+    )
+    initial_state["metadata"]["session_id"] = query_request.session_id
+
+    async def stream_generator():
+        try:
+            async for chunk in request.app.agent_graph.stream(initial_state):
+                yield f"data: {json.dumps(chunk, default=str)}\n\n"
+        except Exception as e:
+            logger.error(f"Agent streaming error: {e}")
+            yield f"data: Error: {str(e)}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream"
+    )
+
+@nlp_router.get("/agent-trace/{session_id}")
+async def get_agent_trace(request: Request, session_id: str):
+    """
+    Returns all memory records for a session.
+    """
+    try:
+        memory_store = request.app.agent_graph._memory._memory_store
+        records = await memory_store.retrieve_memories(query="*", session_id=session_id, k=50)
+        return JSONResponse(content=[dict(r) for r in records])
+    except Exception as e:
+        logger.error(f"Agent trace error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

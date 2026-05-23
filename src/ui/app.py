@@ -3,6 +3,8 @@ import base64
 from typing import Any, Dict, Optional
 import requests
 import streamlit as st
+import uuid
+import json
 
 # ==========================================
 # ⚙️ System Configuration (Hidden from User)
@@ -77,6 +79,46 @@ def init_chat_state() -> None:
         st.session_state.messages = []
     if "is_ready" not in st.session_state:
         st.session_state.is_ready = False
+    if "agent_session_id" not in st.session_state:
+        st.session_state.agent_session_id = str(uuid.uuid4())
+    if "agent_chat_history" not in st.session_state:
+        st.session_state.agent_chat_history = []
+
+def agent_query_stream(query: str, project_id: str, session_id: str):
+    """
+    Calls POST /v1/nlp/agent-query/stream
+    Yields text chunks as they arrive.
+    Falls back to non-streaming if stream endpoint not available.
+    """
+    try:
+        payload = {
+            "query": query,
+            "project_id": str(project_id),
+            "asset_ids": [],
+            "session_id": session_id,
+            "image_paths": []
+        }
+        with requests.post(
+            f"{API_URL}/v1/nlp/agent-query/stream",
+            json=payload,
+            stream=True,
+            timeout=120
+        ) as r:
+            for line in r.iter_lines():
+                if line:
+                    decoded = line.decode("utf-8")
+                    if decoded.startswith("data: "):
+                        token = decoded[6:]
+                        if token != "[DONE]":
+                            yield token
+    except Exception as e:
+        yield f"[Error: {e}]"
+
+def show_agent_trace(trace: list):
+    """Shows the agent execution trace in an expander."""
+    with st.expander("Agent execution trace", expanded=False):
+        for step in trace:
+            st.markdown(f"- `{step}`")
 
 def render_chat_history() -> None:
     for idx, message in enumerate(st.session_state.messages):
@@ -117,6 +159,13 @@ def main() -> None:
     # ==========================================
     with st.sidebar:
         st.title("🛠️ Control Panel")
+
+        st.sidebar.markdown("---")
+        mode = st.sidebar.radio(
+            "Query mode",
+            ["Classic RAG", "Agent Mode"],
+            index=0
+        )
 
         if st.session_state.is_ready:
             st.success("Document Loaded and Ready!")
@@ -211,28 +260,93 @@ def main() -> None:
         st.title("💬 Ask about the lecture")
         st.divider()
 
-        render_chat_history()
+        if mode == "Classic RAG":
+            render_chat_history()
 
-        user_prompt = st.chat_input("Type your question here...")
+            user_prompt = st.chat_input("Type your question here...")
 
-        if user_prompt:
-            st.session_state.messages.append({"role": "user", "content": user_prompt})
-            with st.chat_message("user"):
-                st.markdown(user_prompt, unsafe_allow_html=False)
+            if user_prompt:
+                st.session_state.messages.append({"role": "user", "content": user_prompt})
+                with st.chat_message("user"):
+                    st.markdown(user_prompt, unsafe_allow_html=False)
 
-            with st.chat_message("assistant"):
+                with st.chat_message("assistant"):
+                    try:
+                        answer = st.write_stream(stream_answer(user_prompt))
+                    except Exception as exc:
+                        answer = f"- **Error**: {exc}"
+                        st.markdown(answer)
+
+                    if not answer:
+                        answer = "Sorry, I could not find an answer in this document."
+                        st.markdown(answer)
+
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                st.rerun()
+
+        elif mode == "Agent Mode":
+            st.markdown("#### Agent mode")
+            st.caption(f"Session: {st.session_state.agent_session_id[:8]}...")
+
+            # Show chat history
+            for msg in st.session_state.agent_chat_history:
+                with st.chat_message(msg["role"]):
+                    st.write(msg["content"])
+                    if msg.get("trace"):
+                        show_agent_trace(msg["trace"])
+
+            user_input = st.chat_input("Ask the agents...")
+            if user_input:
+                st.session_state.agent_chat_history.append({
+                    "role": "user", "content": user_input
+                })
+                with st.chat_message("user"):
+                    st.write(user_input)
+
+                with st.chat_message("assistant"):
+                    response_container = st.empty()
+                    full_response = ""
+                    for token in agent_query_stream(
+                        query=user_input,
+                        project_id=st.session_state.get("project_id", str(PROJECT_ID)),
+                        session_id=st.session_state.agent_session_id
+                    ):
+                        full_response += token
+                        response_container.markdown(full_response + "▌")
+                    response_container.markdown(full_response)
+
+                # Fetch trace from non-streaming endpoint for display
                 try:
-                    answer = st.write_stream(stream_answer(user_prompt))
-                except Exception as exc:
-                    answer = f"- **Error**: {exc}"
-                    st.markdown(answer)
+                    trace_resp = requests.get(
+                        f"{API_URL}/v1/nlp/agent-trace/{st.session_state.agent_session_id}",
+                        timeout=10
+                    )
+                    trace_data = trace_resp.json() if trace_resp.ok else []
+                except:
+                    trace_data = []
+                
+                if trace_data and isinstance(trace_data, list):
+                    # Fallback mapping if backend returned full memory records
+                    mapped_trace = []
+                    for record in trace_data:
+                        if isinstance(record, dict) and "content" in record:
+                            mapped_trace.append(record["content"][:150] + "...")
+                        else:
+                            mapped_trace.append(str(record))
+                    trace_data = mapped_trace
 
-                if not answer:
-                    answer = "Sorry, I could not find an answer in this document."
-                    st.markdown(answer)
+                st.session_state.agent_chat_history.append({
+                    "role": "assistant",
+                    "content": full_response,
+                    "trace": trace_data
+                })
 
-            st.session_state.messages.append({"role": "assistant", "content": answer})
-            st.rerun()
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                if st.button("New session"):
+                    st.session_state.agent_session_id = str(uuid.uuid4())
+                    st.session_state.agent_chat_history = []
+                    st.rerun()
 
 if __name__ == "__main__":
     main()

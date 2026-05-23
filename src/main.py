@@ -6,6 +6,7 @@ from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
 from stores.llm.templates.template_parser import TemplateParser
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+from agents.graph.GraphFactory import GraphFactory
 
 # Import metrics setup
 from utils.metrics import setup_metrics
@@ -51,6 +52,8 @@ async def startup_span():
         language=settings.PRIMARY_LANG,
         default_language=settings.DEFAULT_LANG,
     )
+
+    app.agent_graph = GraphFactory.create(app)
 
 async def shutdown_span():
     app.db_engine.dispose()
