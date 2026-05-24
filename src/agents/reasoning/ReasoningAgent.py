@@ -129,3 +129,62 @@ class ReasoningAgent(BaseAgent):
             f"{len(state['reasoning_context'])} chars total"
         )
         return state
+
+    def assemble_multimodal_context(self, state: AgentState) -> str:
+        """
+        Builds labeled context from ALL available sources.
+        Only includes sections that have content.
+        """
+        parts = []
+
+        retrieved = state.get("retrieved_chunks", [])
+        if retrieved:
+            parts.append("=== Retrieved Document Chunks ===")
+            for i, chunk in enumerate(retrieved):
+                parts.append(f"--- Chunk {i+1} ---\n{chunk.get('text', '')}")
+
+        memory = state.get("memory_context", [])
+        if memory:
+            parts.append("\n=== Session Memory ===")
+            for m in memory:
+                parts.append(f"{m['role'].upper()}: {m['content']}")
+
+        file_texts = state.get("file_texts", [])
+        if file_texts:
+            parts.append("\n=== Uploaded File Content ===")
+            for ft in file_texts:
+                parts.append(f"--- Source: {ft.get('file_name', 'unknown')} ---\n{ft.get('text', '')}")
+
+        vision = state.get("vision_description", "").strip()
+        if vision:
+            parts.append(f"\n=== Visual Analysis ===\n{vision}")
+
+        ocr = state.get("ocr_text", "").strip()
+        if ocr:
+            parts.append(f"\n=== OCR Text ===\n{ocr}")
+
+        return "\n".join(parts)
+
+    async def execute_multimodal(self, state: AgentState) -> AgentState:
+        """
+        Calls assemble_multimodal_context().
+        Sets state["reasoning_context"].
+        Sets state["sources_used"] = list of non-empty section names.
+        Trace: "ReasoningAgent: multimodal context — sources: {sources_used}"
+        """
+        self.validate_state(state, [])
+        context = self.assemble_multimodal_context(state)
+        state["reasoning_context"] = context
+        
+        sources_used = []
+        if state.get("retrieved_chunks"): sources_used.append("retrieved_chunks")
+        if state.get("memory_context"): sources_used.append("memory")
+        if state.get("file_texts"): sources_used.append("file_texts")
+        if state.get("vision_description"): sources_used.append("vision")
+        if state.get("ocr_text"): sources_used.append("ocr_text")
+            
+        state["sources_used"] = sources_used
+        state["agent_trace"].append(
+            f"{self.agent_name}: multimodal context — sources: {sources_used}"
+        )
+        return state

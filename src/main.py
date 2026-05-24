@@ -55,6 +55,8 @@ async def startup_span():
 
     app.agent_graph = GraphFactory.create(app)
 
+
+
 async def shutdown_span():
     app.db_engine.dispose()
     await app.vectordb_client.disconnect()

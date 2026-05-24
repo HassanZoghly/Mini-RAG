@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 class PushRequest(BaseModel):
     do_reset: Optional[int] = 0
@@ -20,6 +20,15 @@ class AgentQueryRequest(BaseModel):
 
 class AgentQueryResponse(BaseModel):
     response: str
+    agent_trace: Optional[List[str]] = None
+    retrieved_chunks: Optional[List[dict]] = None
+    session_id: str
+    metadata: Optional[Dict[str, Any]] = None
+
+class MultimodalQueryResponse(BaseModel):
+    response: str
     agent_trace: List[str]
     retrieved_chunks: List[dict]
+    sources_used: List[str]
+    fusion_strategy: str
     session_id: str

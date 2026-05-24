@@ -126,9 +126,13 @@ class RetrievalAgent(BaseAgent):
 
         # Normalise results ------------------------------------------------
         chunks: List[dict] = []
+        MIN_RETRIEVAL_SCORE = 0.75
 
         if raw_results:
             for doc in raw_results:
+                if doc.score < MIN_RETRIEVAL_SCORE:
+                    continue
+
                 # Post-filter by asset_ids when a non-empty filter list is provided.
                 if asset_ids:
                     doc_asset_id = str(

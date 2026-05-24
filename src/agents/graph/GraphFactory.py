@@ -9,7 +9,8 @@ from agents.memory.MemoryAgent import MemoryAgent
 from agents.multimodal.OCRAgent import OCRAgent
 from agents.multimodal.VisionAgent import VisionAgent
 from agents.reasoning.ReasoningAgent import ReasoningAgent
-from agents.response.ResponseAgent import ResponseAgent
+from agents.response.ResponseFormatterAgent import ResponseFormatterAgent
+from agents.smalltalk.SmallTalkAgent import SmallTalkAgent
 
 
 class GraphFactory:
@@ -56,6 +57,7 @@ class GraphFactory:
         embedding_client  = app.embedding_client
         vectordb_client   = app.vectordb_client
         template_parser   = app.template_parser
+        db_client         = app.db_client
 
         # NLPController — used for _flatten_vector and memory store embedding
         nlp_controller = NLPController(
@@ -71,9 +73,12 @@ class GraphFactory:
         process_controller = ProcessController(project_id="")
 
         # Memory store — wraps nlp_controller for semantic memory operations
-        memory_store = MemoryStore(nlp_controller=nlp_controller)
+        memory_store = MemoryStore(
+            nlp_controller=nlp_controller,
+            async_session_maker=db_client  # <--- تمرير الـ Session Maker هنا
+        )
 
-        # -- Instantiate all 7 agents -------------------------------------
+        # -- Instantiate all agents -------------------------------------
         router_agent = RouterAgent(
             llm_provider=generation_client,
         )
@@ -101,9 +106,13 @@ class GraphFactory:
             template_parser=template_parser,
         )
 
-        response_agent = ResponseAgent(
+        response_formatter_agent = ResponseFormatterAgent(
             llm_provider=generation_client,
             template_parser=template_parser,
+        )
+
+        smalltalk_agent = SmallTalkAgent(
+            llm_provider=generation_client,
         )
 
         return AgentGraph(
@@ -113,5 +122,6 @@ class GraphFactory:
             ocr=ocr_agent,
             vision=vision_agent,
             reasoning=reasoning_agent,
-            response=response_agent,
+            response_formatter=response_formatter_agent,
+            smalltalk=smalltalk_agent,
         )

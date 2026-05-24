@@ -1,7 +1,8 @@
-from fastapi import FastAPI, APIRouter, status, Request, HTTPException
+from fastapi import FastAPI, APIRouter, status, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
-from routes.schemes.nlp import PushRequest, SearchRequest, VisualizeRequest, AgentQueryRequest, AgentQueryResponse
+from routes.schemes.nlp import PushRequest, SearchRequest, VisualizeRequest, AgentQueryRequest, AgentQueryResponse, MultimodalQueryResponse
 from agents.base import create_initial_state
+from helpers.config import get_settings
 import json
 from models.ProjectModel import ProjectModel
 from models.ChunkModel import ChunkModel
@@ -12,6 +13,9 @@ import os
 import httpx
 import base64
 import asyncio
+import shutil
+import tempfile
+from agents.multimodal.MultiFileProcessor import MultiFileProcessor
 
 import logging
 
@@ -383,17 +387,27 @@ async def agent_query(request: Request, query_request: AgentQueryRequest):
         initial_state["metadata"]["session_id"] = query_request.session_id
 
         result = await request.app.agent_graph.run(initial_state)
-        
+
         # Save interaction via memory agent
-        memory_agent = request.app.agent_graph._memory
-        await memory_agent.save_interaction(result)
-        
-        return AgentQueryResponse(
-            response=result.get("final_response", ""),
-            agent_trace=result.get("agent_trace", []),
-            retrieved_chunks=result.get("retrieved_chunks", []),
-            session_id=query_request.session_id
-        )
+        try:
+            memory_agent = request.app.agent_graph._memory
+            await memory_agent.save_interaction(result)
+        except Exception as e:
+            logger.warning(f"Failed to save interaction: {e}")
+
+        settings = get_settings()
+
+        response_kwargs = {
+            "response": result.get("final_response", ""),
+            "session_id": query_request.session_id
+        }
+
+        if settings.DEBUG_MODE:
+            response_kwargs["agent_trace"] = result.get("agent_trace", [])
+            response_kwargs["retrieved_chunks"] = result.get("retrieved_chunks", [])
+            response_kwargs["metadata"] = result.get("metadata", {})
+
+        return AgentQueryResponse(**response_kwargs)
     except Exception as e:
         logger.error(f"Agent query error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -401,28 +415,181 @@ async def agent_query(request: Request, query_request: AgentQueryRequest):
 @nlp_router.post("/agent-query/stream")
 async def agent_query_stream(request: Request, query_request: AgentQueryRequest):
     """
-    Process a multi-agent RAG query with a streaming response.
-    """
-    initial_state = create_initial_state(
-        query=query_request.query,
-        project_id=query_request.project_id,
-        asset_ids=query_request.asset_ids,
-        image_paths=query_request.image_paths
-    )
-    initial_state["metadata"]["session_id"] = query_request.session_id
+    Process a multi-agent RAG query and stream the LLM answer as Server-Sent Events.
 
-    async def stream_generator():
+    The pipeline runs all agents up to and including ``ReasoningAgent`` to
+    build the full context, then uses ``ResponseAgent.stream_execute`` to
+    stream LLM answer tokens in real-time.  Each token is emitted as an
+    SSE ``data:`` line.  A final ``data: [DONE]`` sentinel closes the stream.
+
+    Request body
+    ------------
+    Same as ``POST /agent-query``.
+
+    Returns
+    -------
+    StreamingResponse
+        ``text/event-stream`` with one ``data: <token>`` line per LLM token.
+    """
+    try:
+        initial_state = create_initial_state(
+            query=query_request.query,
+            project_id=query_request.project_id,
+            asset_ids=query_request.asset_ids,
+            image_paths=query_request.image_paths
+        )
+        initial_state["metadata"]["session_id"] = query_request.session_id
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    async def token_stream_generator():
         try:
-            async for chunk in request.app.agent_graph.stream(initial_state):
-                yield f"data: {json.dumps(chunk, default=str)}\n\n"
+            # Step 1: Run the full pipeline
+            # The pipeline now ends at ResponseFormatterAgent, which sets final_response.
+            # But wait, we want to stream the final_response!
+            # ResponseFormatterAgent has stream_execute. We run up to the node before it,
+            # or just run the whole pipeline without the final node if possible.
+            # However, for simplicity, we will update the stream endpoint to just call
+            # the formatter's stream_execute.
+            pipeline_state = await request.app.agent_graph.run_up_to_formatter(initial_state)
+
+            # Step 2: Stream LLM tokens via ResponseFormatterAgent
+            response_formatter = request.app.agent_graph._response_formatter
+            async for token in response_formatter.stream_execute(pipeline_state):
+                if token:
+                    yield f"data: {token}\n\n"
+
+            # Step 3: Save interaction in memory
+            try:
+                memory_agent = request.app.agent_graph._memory
+                await memory_agent.save_interaction(pipeline_state)
+            except Exception as mem_exc:
+                logger.warning(f"Stream: memory save failed (non-fatal): {mem_exc}")
+
         except Exception as e:
             logger.error(f"Agent streaming error: {e}")
-            yield f"data: Error: {str(e)}\n\n"
+            yield f"data: [Error: {str(e)}]\n\n"
         finally:
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(
-        stream_generator(),
+        token_stream_generator(),
+        media_type="text/event-stream"
+    )
+
+@nlp_router.post("/multimodal-query")
+async def multimodal_query(
+    request: Request,
+    query: str = Form(...),
+    project_id: str = Form(...),
+    session_id: str = Form(default="default"),
+    files: list[UploadFile] = File(default=[])
+):
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        saved_paths = []
+        for f in files:
+            # Check if file has an empty filename (happens when no files uploaded but form field present)
+            if not f.filename:
+                continue
+            dest = os.path.join(tmp_dir, f.filename)
+            with open(dest, "wb") as out:
+                out.write(await f.read())
+            saved_paths.append(dest)
+
+        multi_processor = MultiFileProcessor()
+        file_state = await multi_processor.process_files(saved_paths)
+
+        initial_state = create_initial_state(
+            query=query,
+            project_id=project_id,
+            asset_ids=[],
+            image_paths=file_state.get("image_paths", []),
+            uploaded_files=file_state.get("uploaded_files", []),
+        )
+
+        # Merge remaining file_state fields into initial_state
+        initial_state.update({k: v for k, v in file_state.items()
+                               if k not in ("image_paths", "uploaded_files")})
+        initial_state["metadata"]["session_id"] = session_id
+
+        result = await request.app.agent_graph.run_multimodal(initial_state)
+
+        # Get memory agent safely to save interaction
+        try:
+            # Just extract response and query, mock save or rely on ReasoningAgent
+            memory_agent = request.app.agent_graph._memory  # Accessing private memory agent for simplicity
+            await memory_agent.save_interaction(result)
+        except Exception as e:
+            logger.error(f"Failed to save multimodal memory: {e}")
+
+        # Hide internal states if debug disabled
+        DEBUG_MODE = get_settings().DEBUG_MODE
+        final_trace = result.get("agent_trace", []) if DEBUG_MODE else []
+        final_chunks = result.get("retrieved_chunks", []) if DEBUG_MODE else []
+
+        return MultimodalQueryResponse(
+            response=result["final_response"],
+            agent_trace=final_trace,
+            retrieved_chunks=final_chunks,
+            sources_used=result.get("sources_used", []),
+            fusion_strategy=result.get("fusion_strategy", "text_only"),
+            session_id=session_id,
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@nlp_router.post("/multimodal-query/stream")
+async def multimodal_query_stream(
+    request: Request,
+    query: str = Form(...),
+    project_id: str = Form(...),
+    session_id: str = Form(default="default"),
+    files: list[UploadFile] = File(default=[])
+):
+    tmp_dir = tempfile.mkdtemp()
+
+    # We must delay the cleanup until the stream finishes.
+    # We'll use a background task or just yield the cleanup manually.
+
+    saved_paths = []
+    for f in files:
+        if not f.filename:
+            continue
+        dest = os.path.join(tmp_dir, f.filename)
+        with open(dest, "wb") as out:
+            out.write(await f.read())
+        saved_paths.append(dest)
+
+    # multi_processor = MultiFileProcessor(request.app.process_controller)
+    multi_processor = MultiFileProcessor()
+    file_state = await multi_processor.process_files(saved_paths)
+
+    initial_state = create_initial_state(
+        query=query,
+        project_id=project_id,
+        asset_ids=[],
+        image_paths=file_state.get("image_paths", []),
+        uploaded_files=file_state.get("uploaded_files", []),
+    )
+    initial_state.update({k: v for k, v in file_state.items()
+                           if k not in ("image_paths", "uploaded_files")})
+    initial_state["metadata"]["session_id"] = session_id
+
+    async def event_generator():
+        try:
+            state = await request.app.agent_graph.run_multimodal_up_to_formatter(initial_state)
+
+            formatter = request.app.agent_graph._response_formatter
+            async for token in formatter.stream_execute(state):
+                yield f"data: {token}\n\n"
+            yield "data: [DONE]\n\n"
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return StreamingResponse(
+        event_generator(),
         media_type="text/event-stream"
     )
 

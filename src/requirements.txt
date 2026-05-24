@@ -2,10 +2,13 @@ fastapi==0.110.2
 uvicorn[standard]==0.29.0
 python-multipart==0.0.9
 python-dotenv==1.0.1
-pydantic-settings==2.2.1
+pydantic-settings>=2.10.1
 aiofiles==23.2.1
-langchain==0.1.20
-PyMuPDF==1.24.3
+langchain>=0.2.14
+langgraph==1.0.3
+langchain-community==0.4.1
+langchain-text-splitters==1.1.2
+PyMuPDF==1.27.2.3
 motor==3.4.0
 pymongo==4.6.1
 openai==2.26.0
@@ -18,7 +21,7 @@ psycopg2-binary==2.9.11
 pgvector==0.4.2
 nltk==3.9.3
 streamlit==1.45.1
-requests==2.32.3
+requests>=2.32.5
 pytesseract==0.3.13
 pdf2image==1.17.0
 

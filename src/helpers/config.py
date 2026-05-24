@@ -1,10 +1,11 @@
-import re
+import re, os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
 class Settings(BaseSettings):
 
     APP_NAME: str
+    APP_ENV: str
 
     FILE_ALLOWED_TYPES: str
     FILE_MAX_SIZE: int
@@ -38,6 +39,11 @@ class Settings(BaseSettings):
     VECTOR_DB_PATH: str
     VECTOR_DB_DISTANCE_METHOD: str
     VECTOR_DB_PGVEC_INDEX_THRESHOLD: int = 100
+
+    REDIS_PORT: str = os.getenv("REDIS_PORT", "6379")
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    DEBUG_MODE: bool = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
     PRIMARY_LANG: str = "en"
     DEFAULT_LANG: str = "en"

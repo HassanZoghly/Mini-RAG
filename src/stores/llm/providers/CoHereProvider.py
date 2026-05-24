@@ -2,6 +2,7 @@ from ..LLMInterface import LLMInterface
 from ..LLMEnums import CoHereEnums, DocumentTypeEnum
 import cohere
 import logging
+import asyncio
 from typing import List, Union
 
 class CoHereProvider(LLMInterface):
@@ -59,7 +60,7 @@ class CoHereProvider(LLMInterface):
 
         return response.text if response else None
 
-    def generate_stream(self, prompt: str, chat_history: list=[], max_output_tokens: int=None,
+    async def generate_stream(self, prompt: str, chat_history: list=[], max_output_tokens: int=None,
                               temperature: float = None):
         if not self.client or not self.generation_model_id:
             yield "Error: CoHere client or model not set."
@@ -68,20 +69,37 @@ class CoHereProvider(LLMInterface):
         max_output_tokens = max_output_tokens if max_output_tokens else self.default_generation_max_output_tokens
         temperature = temperature if temperature else self.default_generation_temperature
 
-        try:
-            response = self.client.chat_stream(
-                model=self.generation_model_id,
-                chat_history=chat_history,
-                message=self.process_text(prompt),
-                temperature=temperature,
-                max_tokens=max_output_tokens
-            )
-            for event in response:
-                if event.event_type == "text-generation":
-                    yield event.text
-        except Exception as e:
-            self.logger.error(f"Streaming error: {e}")
-            yield f"Error: {e}"
+        loop = asyncio.get_event_loop()
+        queue = asyncio.Queue()
+        
+        def _run():
+            try:
+                response = self.client.chat_stream(
+                    model=self.generation_model_id,
+                    chat_history=chat_history,
+                    message=self.process_text(prompt),
+                    temperature=temperature,
+                    max_tokens=max_output_tokens
+                )
+                for event in response:
+                    if event.event_type == "text-generation":
+                        loop.call_soon_threadsafe(queue.put_nowait, event.text)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        loop.run_in_executor(None, _run)
+
+        while True:
+            token = await queue.get()
+            if token is None:
+                break
+            if isinstance(token, Exception):
+                self.logger.error(f"Streaming error: {token}")
+                yield f"Error: {token}"
+                break
+            yield token
 
     # الدالة الجديدة الخاصة بالـ Reranker
     def rerank(self, query: str, documents: List[str], top_n: int = 3):

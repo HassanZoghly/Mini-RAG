@@ -1,1 +1,1 @@
-from .ResponseAgent import ResponseAgent
+from .ResponseFormatterAgent import ResponseFormatterAgent

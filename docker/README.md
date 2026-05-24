@@ -181,3 +181,44 @@ If you see connection errors when starting the services:
    docker compose logs --tail=100 fastapi
    docker compose logs --tail=100 pgvector
    ```
+
+
+
+### After Editing Models
+##### Step 1
+
+Create migration:
+```bash
+docker exec -it fastapi bash
+```
+Then:
+```bash
+/app/scripts/create_migration.sh "add_memory_agent_tables"
+```
+
+##### Step 2
+
+Run migration:
+```bash
+/app/scripts/migrate.sh
+```
+##### Step 3
+
+Commit migration files:
+```bash
+git add .
+git commit -m "added memory tables"
+```
+
+### If You See:
+```
+Can't locate revision identified by ...
+```
+Run:
+```bash
+docker exec -it fastapi bash
+```
+Then:
+```bash
+/app/scripts/reset_db.sh
+```

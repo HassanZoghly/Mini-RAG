@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 import os
 import re
+import base64
+import mimetypes
 import statistics
 from typing import Dict, List, Tuple
 
 import fitz
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_community.document_loaders import TextLoader
 
@@ -16,6 +18,8 @@ from .ProjectController import ProjectController
 
 import pytesseract
 from pdf2image import convert_from_path
+from PIL import Image
+
 
 @dataclass
 class Document:
@@ -25,11 +29,20 @@ class Document:
 
 class ProcessController(BaseController):
 
+    # ── file-type registries ──────────────────────────────────
+    IMAGE_EXTENSIONS  = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".gif"}
+    TEXT_EXTENSIONS   = {".txt", ".md", ".csv", ".json", ".html", ".xml", ".yaml", ".yml"}
+    PDF_EXTENSION     = ".pdf"
+
     def __init__(self, project_id: str):
         super().__init__()
 
         self.project_id = project_id
         self.project_path = ProjectController().get_project_path(project_id=project_id)
+
+    # ─────────────────────────────────────────────────────────
+    # existing helpers (unchanged)
+    # ─────────────────────────────────────────────────────────
 
     def get_file_extension(self, file_id: str):
         return os.path.splitext(file_id)[-1]
@@ -146,8 +159,6 @@ class ProcessController(BaseController):
                 page_markdown = self.extract_page_markdown(page=page)
                 cleaned_markdown = self.clean_markdown_text(page_markdown)
 
-                # Fallback: if fitz returned almost nothing, the page is likely
-                # a scanned image — run OCR on that specific page only.
                 if len(cleaned_markdown.strip()) < 50:
                     print(
                         f"[ProcessController] Page {page_index + 1} has < 50 chars "
@@ -155,7 +166,7 @@ class ProcessController(BaseController):
                     )
                     cleaned_markdown = self._extract_page_via_ocr(
                         file_path=file_path,
-                        page_number=page_index + 1,  # 1-based for pdf2image
+                        page_number=page_index + 1,
                     )
 
                 if not cleaned_markdown.strip():
@@ -174,18 +185,6 @@ class ProcessController(BaseController):
         return pages
 
     def _extract_page_via_ocr(self, file_path: str, page_number: int) -> str:
-        """
-        Convert a single PDF page to an image and run Tesseract OCR on it.
-        Uses first_page / last_page so only the target page is loaded into memory,
-        keeping large PDFs efficient.
-
-        Args:
-            file_path:   Absolute path to the PDF file.
-            page_number: 1-based page index to process.
-
-        Returns:
-            Extracted text string (empty string if the page is blank/unreadable).
-        """
         try:
             images = convert_from_path(
                 file_path,
@@ -204,6 +203,192 @@ class ProcessController(BaseController):
         except Exception as e:
             print(f"[ProcessController] OCR failed for page {page_number}: {e}")
             return ""
+
+    # ─────────────────────────────────────────────────────────
+    # NEW: multimodal file extraction methods
+    # All methods below work on an absolute file_path directly.
+    # They do NOT depend on self.project_path.
+    # ─────────────────────────────────────────────────────────
+
+    def classify_file_type(self, file_path: str) -> str:
+        """
+        Classify a file by extension.
+        Returns: "pdf" | "image" | "text" | "unsupported"
+        Never reads the file — extension only.
+        """
+        ext = os.path.splitext(file_path)[-1].lower()
+        if ext == self.PDF_EXTENSION:
+            return "pdf"
+        if ext in self.IMAGE_EXTENSIONS:
+            return "image"
+        if ext in self.TEXT_EXTENSIONS:
+            return "text"
+        return "unsupported"
+
+    def extract_image_text(self, file_path: str) -> str:
+        """
+        Run pytesseract OCR on an image file (jpg, png, webp, etc.).
+        Returns extracted text string. Returns "" on failure — never raises.
+        """
+        try:
+            img = Image.open(file_path)
+            # convert to RGB so tesseract handles all modes (RGBA, P, L, etc.)
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            text = pytesseract.image_to_string(img, lang="eng+ara")
+            return text.strip()
+        except Exception as e:
+            print(f"[ProcessController] image OCR failed for {file_path}: {e}")
+            return ""
+
+    def extract_image_base64(self, file_path: str) -> dict:
+        """
+        Encode an image file to base64 for vision-model consumption.
+        Returns {"file_name": str, "b64": str, "mime": str}
+        mime is guessed from extension; defaults to "image/jpeg".
+        Never raises — returns empty dict on failure.
+        """
+        try:
+            mime, _ = mimetypes.guess_type(file_path)
+            if not mime or not mime.startswith("image/"):
+                mime = "image/jpeg"
+            with open(file_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            return {
+                "file_name": os.path.basename(file_path),
+                "b64": b64,
+                "mime": mime,
+            }
+        except Exception as e:
+            print(f"[ProcessController] base64 encoding failed for {file_path}: {e}")
+            return {}
+
+    def extract_text_file(self, file_path: str) -> str:
+        """
+        Read a plain text file (.txt, .md, .csv, .json, .html, etc.).
+        Tries UTF-8 first, falls back to latin-1.
+        Returns text string. Returns "" on failure — never raises.
+        """
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except UnicodeDecodeError:
+            try:
+                with open(file_path, "r", encoding="latin-1") as f:
+                    return f.read()
+            except Exception as e:
+                print(f"[ProcessController] text read failed for {file_path}: {e}")
+                return ""
+        except Exception as e:
+            print(f"[ProcessController] text read failed for {file_path}: {e}")
+            return ""
+
+    def extract_pdf_text_and_images(self, file_path: str) -> tuple:
+        """
+        Extract text AND embedded images from a PDF.
+
+        Text extraction:
+        - Uses existing extract_pdf_as_markdown() which already has
+          per-page OCR fallback when fitz returns < 50 chars.
+
+        Image extraction:
+        - Iterates pages with fitz, extracts embedded raster images.
+        - Each image encoded to base64 via extract_image_base64().
+
+        Returns:
+            (
+                full_text: str,                      # all pages joined
+                images: list[dict]                   # [{"file_name", "b64", "mime"}]
+            )
+        Never raises — returns ("", []) on total failure.
+        """
+        full_text = ""
+        images = []
+
+        try:
+            # --- text ---
+            pages = self.extract_pdf_as_markdown(file_path)
+            full_text = "\n\n".join(p.page_content for p in pages if p.page_content.strip())
+
+            # --- embedded images ---
+            doc = fitz.open(file_path)
+            try:
+                for page_index, page in enumerate(doc):
+                    for img_index, img_info in enumerate(page.get_images(full=True)):
+                        xref = img_info[0]
+                        try:
+                            base_image = doc.extract_image(xref)
+                            img_bytes  = base_image["image"]
+                            img_ext    = base_image.get("ext", "png")
+                            mime       = f"image/{img_ext}" if img_ext != "jpg" else "image/jpeg"
+                            b64        = base64.b64encode(img_bytes).decode("utf-8")
+                            images.append({
+                                "file_name": f"{os.path.basename(file_path)}_p{page_index+1}_img{img_index+1}.{img_ext}",
+                                "b64": b64,
+                                "mime": mime,
+                            })
+                        except Exception as img_err:
+                            print(f"[ProcessController] image extraction failed xref={xref}: {img_err}")
+            finally:
+                doc.close()
+
+        except Exception as e:
+            print(f"[ProcessController] PDF extraction failed for {file_path}: {e}")
+
+        return full_text, images
+
+    def extract_any_file(self, file_path: str) -> dict:
+        """
+        Universal dispatcher. Classifies the file and returns a unified result dict:
+        {
+            "file_name": str,
+            "file_type": "pdf" | "image" | "text" | "unsupported",
+            "text": str,          # extracted text (empty string if none)
+            "images": list[dict], # [{"file_name", "b64", "mime"}] — populated for images and PDFs with embedded images
+            "ocr_used": bool,     # True when pytesseract was the source of text
+        }
+        Never raises — returns a result with empty fields on failure.
+        """
+        file_name = os.path.basename(file_path)
+        file_type = self.classify_file_type(file_path)
+
+        result = {
+            "file_name": file_name,
+            "file_type": file_type,
+            "text": "",
+            "images": [],
+            "ocr_used": False,
+        }
+
+        if file_type == "pdf":
+            text, images = self.extract_pdf_text_and_images(file_path)
+            result["text"] = text
+            result["images"] = images
+            # OCR was used if any page had < 50 chars from fitz (handled internally)
+            # We flag it when text came back non-empty but fitz alone wouldn't have done it.
+            # Simple heuristic: if images exist in a scanned PDF, ocr_used is likely True.
+            result["ocr_used"] = True  # conservative — always flag PDF as potentially OCR'd
+
+        elif file_type == "image":
+            text = self.extract_image_text(file_path)
+            b64_data = self.extract_image_base64(file_path)
+            result["text"] = text
+            result["ocr_used"] = True
+            if b64_data:
+                result["images"] = [b64_data]
+
+        elif file_type == "text":
+            result["text"] = self.extract_text_file(file_path)
+            result["ocr_used"] = False
+
+        else:
+            print(f"[ProcessController] unsupported file type for: {file_path}")
+
+        return result
+
+    # ─────────────────────────────────────────────────────────
+    # existing page-level parsing (unchanged below this line)
+    # ─────────────────────────────────────────────────────────
 
     def extract_page_markdown(self, page) -> str:
         page_dict = page.get_text("dict", sort=True)
@@ -531,28 +716,24 @@ class ProcessController(BaseController):
         return chunks
 
     def process_and_chunk_text(self, raw_text: str, chunk_size: int, overlap_size: int):
-        # 1. تنظيف مبدئي للنص من المسافات الغريبة والرموز الميتة
         clean_text = raw_text.replace('\x00', '')
-        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text) # منع المسافات الفاضية الطويلة جداً
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
 
-        # 2. التقطيع الذكي (Smart Chunking)
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=overlap_size,
             length_function=len,
-            # الفواصل دي بتجبره يقطع عند نهاية البراجراف، لو مقدرش يقطع عند نهاية الجملة، وهكذا
             separators=["\n\n", "\n", ". ", "? ", "! ", " ", ""]
         )
 
         chunks = text_splitter.split_text(clean_text)
 
-        # 3. تجهيز الداتا عشان تتخزن في الداتا بيز
         processed_chunks = []
         for i, chunk in enumerate(chunks):
             processed_chunks.append({
                 "chunk_text": chunk.strip(),
                 "chunk_order": i + 1,
-                "chunk_metadata": {} # شلنا الميتاداتا زي ما اتفقنا
+                "chunk_metadata": {}
             })
 
         return processed_chunks

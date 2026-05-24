@@ -1,4 +1,5 @@
 APP_NAME="mini-RAG"
+APP_ENV="development"
 
 FILE_ALLOWED_TYPES=["text/plain", "application/pdf"]
 FILE_MAX_SIZE=10

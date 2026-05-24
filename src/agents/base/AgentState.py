@@ -65,6 +65,11 @@ class AgentState(TypedDict):
     agent_trace: List[str]
     error: Optional[str]
     metadata: dict
+    uploaded_files: List[dict]
+    file_texts: List[dict]
+    image_base64: List[dict]
+    fusion_strategy: str
+    sources_used: List[str]
 
 
 def create_initial_state(
@@ -72,33 +77,11 @@ def create_initial_state(
     project_id: str,
     asset_ids: List[str],
     image_paths: List[str],
+    uploaded_files: Optional[List[dict]] = None,
 ) -> AgentState:
     """
     Factory function that returns a fully-initialised ``AgentState`` with
     sensible defaults for all optional fields.
-
-    Only the four parameters below carry meaningful user-provided values;
-    every other field is zeroed out so that downstream agents can safely
-    read or append to them without defensive ``None`` checks.
-
-    Parameters
-    ----------
-    query : str
-        The natural-language question from the user.
-    project_id : str
-        The project identifier to scope retrieval and asset access.
-    asset_ids : List[str]
-        Document / asset identifiers to restrict the pipeline to.
-        Pass an empty list to include all assets in the project.
-    image_paths : List[str]
-        Paths to any images attached to this query.
-        Pass an empty list when the query contains no images.
-
-    Returns
-    -------
-    AgentState
-        A freshly constructed state dict ready to be passed into the
-        first agent of the pipeline.
     """
     return AgentState(
         query=query,
@@ -114,4 +97,9 @@ def create_initial_state(
         agent_trace=[],
         error=None,
         metadata={},
+        uploaded_files=uploaded_files or [],
+        file_texts=[],
+        image_base64=[],
+        fusion_strategy="text_only",
+        sources_used=[],
     )

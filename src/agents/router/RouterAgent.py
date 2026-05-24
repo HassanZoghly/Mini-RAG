@@ -1,5 +1,6 @@
 from agents.base import BaseAgent, AgentState
-from typing import Dict
+from typing import Dict, Any
+import json
 
 
 # Keywords that suggest the user's query is about content extracted via OCR.
@@ -26,7 +27,7 @@ class RouterAgent(BaseAgent):
     * ``needs_ocr``     – ``True`` when the query suggests OCR extraction.
     * ``needs_memory``  – ``True`` when memory/history keywords are found.
     * ``route``         – ``"retrieval_only"`` for plain text queries with
-                          no special requirements.
+                        no special requirements.
 
     Parameters
     ----------
@@ -85,47 +86,34 @@ class RouterAgent(BaseAgent):
 
         state["metadata"].update(intent)
 
-        # Derive a human-readable route label for convenience
-        if not any(intent.values()):
-            state["metadata"]["route"] = "retrieval_only"
-
-        route_summary = ", ".join(
-            k for k, v in intent.items() if v
-        ) or "retrieval_only"
+        route_summary = intent.get("route", "retrieval")
+        confidence = intent.get("confidence", 0.0)
 
         state["agent_trace"].append(
-            f"{self.agent_name}: routed query → {route_summary}"
+            f"{self.agent_name}: routed query → {route_summary} (confidence: {confidence:.2f})"
         )
 
-        self.log_step(f"routing decision: {route_summary}")
+        self.log_step(f"routing decision: {route_summary} (confidence: {confidence:.2f})")
         return state
 
     # ------------------------------------------------------------------
     # Intent detection
     # ------------------------------------------------------------------
 
-    def _detect_intent(self, query: str) -> Dict[str, bool]:
+    def _detect_intent(self, query: str) -> Dict[str, Any]:
         """
-        Analyse *query* with lightweight heuristics and return a dict of
-        boolean capability flags.
-
-        Parameters
-        ----------
-        query : str
-            The raw natural-language query from the user.
+        Analyse *query* with the LLM to classify educational vs conversational intent,
+        returning a JSON object with confidence scoring.
 
         Returns
         -------
         dict
-            A mapping with the following keys, each with a ``bool`` value:
-
-            * ``needs_vision``  – image-understanding required.
-            * ``needs_ocr``     – OCR text extraction required.
-            * ``needs_memory``  – conversation history required.
+            A mapping with boolean capability flags, a 'route' string, and 'confidence'.
         """
         normalised = query.lower().strip()
         tokens = set(normalised.split())
 
+        # Check for vision/ocr via heuristics
         needs_ocr = bool(_OCR_KEYWORDS & tokens) or any(
             phrase in normalised for phrase in _OCR_KEYWORDS if " " in phrase
         )
@@ -139,10 +127,66 @@ class RouterAgent(BaseAgent):
             )
         )
 
-        # Vision flag is set to False here; execute() will override it
-        # when state["image_paths"] is non-empty.
+        # Attempt JSON-Based LLM Intent Detection
+        system_prompt = (
+            "You are an intent classification system for an educational AI Assistant (RAG application).\n"
+            "You MUST prioritize educational and lecture-related requests over casual conversation.\n"
+            "Classify the following user query into exactly ONE of these categories:\n\n"
+            "- retrieval: (Priority) Queries asking to summarize a lecture, explain a topic, generate a quiz, create MCQs, define a concept, or answer a factual question. (e.g. 'summarize this', 'what is bagging?', 'generate a quiz')\n"
+            "- reasoning: Complex comparative or analytical educational questions. (e.g. 'compare boosting and bagging')\n"
+            "- multimodal: Questions specifically asking to explain or analyze an attached image.\n"
+            "- memory: Questions asking about previous conversation history. (e.g. 'what did I just ask?')\n"
+            "- small_talk: (Lowest Priority) Simple greetings or casual social chatter with NO educational request. (e.g. 'hi', 'hello', 'thanks', 'how are you?')\n\n"
+            "Return ONLY a valid JSON object matching this schema:\n"
+            '{"intent": "category_name", "confidence": 0.95}'
+        )
+
+        detected_category = "retrieval"
+        confidence = 0.0
+
+        try:
+            llm_response = self._llm_provider.generate_text(
+                prompt=f"Query: {query}\n\nRespond with strictly valid JSON only.",
+                chat_history=[
+                    self._llm_provider.construct_prompt(prompt=system_prompt, role=self._llm_provider.enums.SYSTEM.value)
+                ]
+            )
+
+            # Clean possible markdown wrapping from LLM response
+            clean_json = (llm_response or "").strip()
+            if clean_json.startswith("```json"):
+                clean_json = clean_json[7:]
+            if clean_json.startswith("```"):
+                clean_json = clean_json[3:]
+            if clean_json.endswith("```"):
+                clean_json = clean_json[:-3]
+            clean_json = clean_json.strip()
+
+            parsed = json.loads(clean_json)
+            detected_category = parsed.get("intent", "retrieval").strip().lower()
+            confidence = float(parsed.get("confidence", 0.0))
+
+            self.log_step(f"LLM intent output: {parsed}")
+        except Exception as exc:
+            self.log_step(f"JSON intent detection failed or parsing error: {exc}. Defaulting to retrieval.")
+            detected_category = "retrieval"
+            confidence = 0.0
+
+        # Enforce Minimum Confidence Threshold
+        MIN_CONFIDENCE = 0.70
+        if confidence < MIN_CONFIDENCE:
+            self.log_step(f"Confidence {confidence:.2f} < {MIN_CONFIDENCE}. Fallback to retrieval.")
+            detected_category = "retrieval"
+
+        # Map to valid routes
+        valid_routes = {"small_talk", "retrieval", "memory", "multimodal", "reasoning"}
+        if detected_category not in valid_routes:
+            detected_category = "retrieval"
+
         return {
+            "route": detected_category,
+            "confidence": confidence,
             "needs_vision": False,
-            "needs_ocr": needs_ocr,
-            "needs_memory": needs_memory,
+            "needs_ocr": needs_ocr or detected_category == "multimodal",
+            "needs_memory": needs_memory or detected_category == "memory",
         }
