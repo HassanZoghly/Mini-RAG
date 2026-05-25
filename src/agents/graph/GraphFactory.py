@@ -58,6 +58,7 @@ class GraphFactory:
         vectordb_client   = app.vectordb_client
         template_parser   = app.template_parser
         db_client         = app.db_client
+        reranker_client   = app.reranker_client
 
         # NLPController — used for _flatten_vector and memory store embedding
         nlp_controller = NLPController(
@@ -87,6 +88,7 @@ class GraphFactory:
             embedding_client=embedding_client,
             vectordb_client=vectordb_client,
             nlp_controller=nlp_controller,
+            reranker_client=reranker_client,
         )
 
         memory_agent = MemoryAgent(

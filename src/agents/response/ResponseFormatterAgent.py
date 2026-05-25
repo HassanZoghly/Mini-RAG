@@ -1,5 +1,6 @@
 from typing import AsyncGenerator
 from agents.base import BaseAgent, AgentState
+import re
 
 class ResponseFormatterAgent(BaseAgent):
     """
@@ -79,20 +80,47 @@ class ResponseFormatterAgent(BaseAgent):
         state["agent_trace"].append(f"{self.agent_name}: generated final answer (streaming)")
 
     def _build_prompt(self, state: AgentState):
+        import re
+
         query: str = state["query"]
         reasoning_context: str = state.get("reasoning_context", "").strip()
 
-        # التعديل هنا: تحديد الـ Template بناءً على الـ Route أو الكلمة المفتاحية
         query_lower = query.lower().strip()
         route = state.get("metadata", {}).get("route", "")
 
-        if route == "summary" or "summarize" in query_lower:
-            system_prompt = self._template_parser.get("rag", "summarize_system_prompt")
-        elif route == "quiz" or "quiz" in query_lower:
-            # تمرير المتغيرات المطلوبة للـ Quiz
-            system_prompt = self._template_parser.get("rag", "quiz_system_prompt", num_questions=5)
+        # 1. اكتشاف اللغة
+        is_arabic = any('\u0600' <= char <= '\u06FF' for char in query) or "arabic" in query_lower or "عربي" in query_lower
+
+        # 2. تحديد العملية
+        is_summary = route == "summary" or "summarize" in query_lower or "ملخص" in query_lower
+        is_quiz = route == "quiz" or "quiz" in query_lower or "امتحان" in query_lower
+
+        q_match = re.search(r'\[(\d+)\]', query)
+        num_q = int(q_match.group(1)) if q_match else 5
+
+        # 3. سحب القوالب
+        if is_arabic:
+            from stores.llm.templates.locales.ar.rag import summarize_system_prompt as ar_sum
+            from stores.llm.templates.locales.ar.rag import quiz_system_prompt as ar_quiz
+            from stores.llm.templates.locales.ar.rag import system_prompt as ar_sys
+
+            if is_summary:
+                system_prompt = ar_sum.safe_substitute()
+            elif is_quiz:
+                system_prompt = ar_quiz.safe_substitute(num_questions=num_q)
+            else:
+                system_prompt = ar_sys.safe_substitute()
         else:
-            system_prompt = self._template_parser.get("rag", "system_prompt")
+            from stores.llm.templates.locales.en.rag import summarize_system_prompt as en_sum
+            from stores.llm.templates.locales.en.rag import quiz_system_prompt as en_quiz
+            from stores.llm.templates.locales.en.rag import system_prompt as en_sys
+
+            if is_summary:
+                system_prompt = en_sum.safe_substitute()
+            elif is_quiz:
+                system_prompt = en_quiz.safe_substitute(num_questions=num_q)
+            else:
+                system_prompt = en_sys.safe_substitute()
 
         chat_history = [
             self._llm.construct_prompt(
@@ -101,22 +129,42 @@ class ResponseFormatterAgent(BaseAgent):
             )
         ]
 
+        # 4. 🔥 الحقنة الصارمة لمنع التلخيص العشوائي نهائياً
+        if is_summary:
+            instruction = (
+                "**التعليمات:** قم بتقديم ملخص شامل ومنظم للملفات الموجودة بالأسفل." if is_arabic else "**INSTRUCTION:** Provide a structured summary of the files below."
+            )
+        elif is_quiz:
+            instruction = (
+                "**التعليمات:** قم بتوليد أسئلة الامتحان بناءً على المحتوى بالأسفل." if is_arabic else "**INSTRUCTION:** Generate the quiz based on the content below."
+            )
+        else:
+            instruction = (
+                "**تعليمات الإجابة (Q&A):**\n"
+                "1. ابحث في النصوص المرفقة بالأسفل (Reference Material) عن الإجابة الدقيقة لسؤال الطالب.\n"
+                "2. أجب باختصار وفي صلب الموضوع. ممنوع تماماً تلخيص المادة.\n"
+                "3. ⚠️ **تجاهل الإخفاقات السابقة:** قيم هذا السؤال بشكل مستقل تماماً.\n"
+                "4. إذا لم تجد الإجابة نهائياً في النص المرفق، قل 'المعلومة غير متوفرة في المحاضرة'."
+                if is_arabic else
+                "**Q&A INSTRUCTIONS:**\n"
+                "1. Extract the exact answer from the Reference Material below.\n"
+                "2. Be concise. Do NOT summarize.\n"
+                "3. ⚠️ **IGNORE PAST FAILURES:** Evaluate this query independently.\n"
+                "4. If the answer is truly missing, say 'This information is not present in the provided lectures.'"
+            )
+
+        # 🎯 الهندسة العكسية: التعليمات والسؤال في القمة، والمحاضرات في القاع
         if reasoning_context:
             full_prompt = (
-                f"## Reference Material\n\n"
-                f"{reasoning_context}\n\n"
-                f"---\n\n"
-                f"## Student Question\n\n"
-                f"{query}\n\n"
-                f"## Your Answer\n\n"
-                f"Respond using Markdown formatting."
+                f"{instruction}\n\n"
+                f"## Student Question:\n{query}\n\n"
+                f"---\n## Reference Material:\n\n{reasoning_context}"
             )
         else:
             full_prompt = (
-                f"## Student Question\n\n"
-                f"{query}\n\n"
-                f"## Your Answer\n\n"
-                f"No documents were found. Respond using Markdown formatting."
+                f"{instruction}\n\n"
+                f"## Student Question:\n{query}\n\n"
+                f"---\n## Reference Material:\nNo documents were found."
             )
 
         return full_prompt, chat_history

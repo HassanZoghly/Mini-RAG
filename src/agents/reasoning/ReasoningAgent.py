@@ -131,39 +131,71 @@ class ReasoningAgent(BaseAgent):
         return state
 
     def assemble_multimodal_context(self, state: AgentState) -> str:
-        """
-        Builds labeled context from ALL available sources.
-        Only includes sections that have content.
-        """
         parts = []
 
+        query = state.get("query", "")
+        query_lower = query.lower()
+        route = state.get("metadata", {}).get("route", "")
+
+        is_summary = route == "summary" or "summarize" in query_lower or "ملخص" in query_lower
+        is_quiz = route == "quiz" or "quiz" in query_lower or "امتحان" in query_lower
+        is_broad_task = is_summary or is_quiz
+
+        # 1. القطع المسترجعة
         retrieved = state.get("retrieved_chunks", [])
         if retrieved:
-            parts.append("=== Retrieved Document Chunks ===")
+            parts.append("=== 📚 Retrieved Lecture Chunks ===")
             for i, chunk in enumerate(retrieved):
                 parts.append(f"--- Chunk {i+1} ---\n{chunk.get('text', '')}")
 
-        memory = state.get("memory_context", [])
-        if memory:
-            parts.append("\n=== Session Memory ===")
-            for m in memory:
-                parts.append(f"{m['role'].upper()}: {m['content']}")
-
+        # 2. الملفات المرفوعة (مع خوارزمية الترتيب الديناميكي المانعة للقص)
         file_texts = state.get("file_texts", [])
         if file_texts:
-            parts.append("\n=== Uploaded File Content ===")
-            for ft in file_texts:
-                parts.append(f"--- Source: {ft.get('file_name', 'unknown')} ---\n{ft.get('text', '')}")
+            parts.append("\n=== 📄 Uploaded File Content ===")
+            if not is_broad_task:
+                parts.append(
+                    "🚨 URGENT Q&A CONSTRAINT: The user is asking a specific question. "
+                    "Scan the following text ONLY to extract the answer. "
+                    "IGNORE everything else. DO NOT summarize the files under any circumstances."
+                )
 
+            # خوارزمية الفرز الذكي: استخراج الكلمات المفتاحية من السؤال (تجاهل الكلمات القصيرة جداً)
+            query_terms = set([word for word in query_lower.replace("?", "").replace(".", "").split() if len(word) > 2])
+
+            def file_relevance_score(ft):
+                text_lower = ft.get('text', '').lower()
+                # حساب عدد التطابقات لكل محاضرة مع كلمات السؤال
+                return sum(1 for term in query_terms if term in text_lower)
+
+            # ترتيب المحاضرات تنازلياً بحيث تكون المحاضرة الأكثر ارتباطاً بالسؤال في القمة دائماً
+            sorted_files = sorted(file_texts, key=file_relevance_score, reverse=True)
+
+            for ft in sorted_files:
+                parts.append(f"--- START OF FILE: {ft.get('file_name', 'unknown')} ---")
+                parts.append(ft.get('text', ''))
+                parts.append(f"--- END OF FILE: {ft.get('file_name', 'unknown')} ---\n")
+
+        # 3. الذاكرة
+        memory = state.get("memory_context", [])
+        if memory:
+            parts.append("\n=== 🧠 Session Memory ===")
+            for m in memory:
+                if 'role' in m:
+                    parts.append(f"{m['role'].upper()}: {m['content']}")
+                else:
+                    parts.append(m.get('content', ''))
+
+        # 4. الرؤية البصرية
         vision = state.get("vision_description", "").strip()
         if vision:
-            parts.append(f"\n=== Visual Analysis ===\n{vision}")
+            parts.append(f"\n=== 👁️ Visual Analysis ===\n{vision}")
 
+        # 5. استخراج النصوص من الصور
         ocr = state.get("ocr_text", "").strip()
         if ocr:
-            parts.append(f"\n=== OCR Text ===\n{ocr}")
+            parts.append(f"\n=== 📝 OCR Text ===\n{ocr}")
 
-        return "\n".join(parts)
+        return "\n\n".join(parts)
 
     async def execute_multimodal(self, state: AgentState) -> AgentState:
         """
@@ -175,14 +207,14 @@ class ReasoningAgent(BaseAgent):
         self.validate_state(state, [])
         context = self.assemble_multimodal_context(state)
         state["reasoning_context"] = context
-        
+
         sources_used = []
         if state.get("retrieved_chunks"): sources_used.append("retrieved_chunks")
         if state.get("memory_context"): sources_used.append("memory")
         if state.get("file_texts"): sources_used.append("file_texts")
         if state.get("vision_description"): sources_used.append("vision")
         if state.get("ocr_text"): sources_used.append("ocr_text")
-            
+
         state["sources_used"] = sources_used
         state["agent_trace"].append(
             f"{self.agent_name}: multimodal context — sources: {sources_used}"

@@ -30,10 +30,11 @@ class RetrievalAgent(BaseAgent):
         used for normalising raw embedding output.
     """
 
-    def __init__(self, embedding_client, vectordb_client, nlp_controller) -> None:
+    def __init__(self, embedding_client, vectordb_client, nlp_controller, reranker_client=None) -> None:
         self._embedding_client = embedding_client
         self._vectordb_client = vectordb_client
         self._nlp_controller = nlp_controller
+        self._reranker_client = reranker_client
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -113,12 +114,21 @@ class RetrievalAgent(BaseAgent):
             )
             return state
 
+        # تحديد ما إذا كان الطلب شاملاً (تلخيص أو أسئلة) لزيادة سحب البيانات
+        query_lower = query.lower()
+        route = state.get("metadata", {}).get("route", "")
+        is_broad_query = route in ["summary", "quiz"] or "summarize" in query_lower or "quiz" in query_lower or "ملخص" in query_lower or "امتحان" in query_lower
+
+        # سحب 60 قطعة للملخصات لتغطية كل المحاضرات، وتقليل شرط التشابه
+        fetch_limit = 60 if is_broad_query else 15
+        MIN_RETRIEVAL_SCORE = 0.05 if is_broad_query else 0.30
+
         # Vector search ----------------------------------------------------
         try:
             raw_results = await self._vectordb_client.search_by_vector(
                 collection_name=collection_name,
                 vector=query_vector,
-                limit=10,
+                limit=fetch_limit,
             )
         except Exception as exc:
             self.log_step(f"vector search raised an exception: {exc}")
@@ -126,18 +136,15 @@ class RetrievalAgent(BaseAgent):
 
         # Normalise results ------------------------------------------------
         chunks: List[dict] = []
-        MIN_RETRIEVAL_SCORE = 0.75
 
         if raw_results:
             for doc in raw_results:
                 if doc.score < MIN_RETRIEVAL_SCORE:
                     continue
 
-                # Post-filter by asset_ids when a non-empty filter list is provided.
+                # Post-filter by asset_ids
                 if asset_ids:
-                    doc_asset_id = str(
-                        (doc.metadata or {}).get("asset_id", "")
-                    )
+                    doc_asset_id = str((doc.metadata or {}).get("asset_id", ""))
                     if doc_asset_id not in [str(a) for a in asset_ids]:
                         continue
 
@@ -147,10 +154,28 @@ class RetrievalAgent(BaseAgent):
                     "metadata": doc.metadata if doc.metadata else {},
                 })
 
+        # --- NEW RERANKER STEP ---
+        if self._reranker_client and len(chunks) > 0:
+            # استخراج النصوص فقط لإرسالها للرينكر
+            docs_texts = [c["text"] for c in chunks]
+
+            self.log_step(f"Reranking {len(docs_texts)} chunks...")
+            # اختيار أفضل 5 قطع بدقة شديدة
+            ranked_texts = self._reranker_client.rerank(query=query, documents=docs_texts, top_n=5)
+
+            # إعادة بناء الـ Chunks للحفاظ على الـ Metadata الأصلية
+            reranked_chunks = []
+            for r_text in ranked_texts:
+                for c in chunks:
+                    if c["text"] == r_text and c not in reranked_chunks:
+                        reranked_chunks.append(c)
+                        break
+            chunks = reranked_chunks
+            self.log_step(f"Kept top {len(chunks)} chunks after Reranking.")
+
         state["retrieved_chunks"] = chunks
         state["agent_trace"].append(
-            f"{self.agent_name}: retrieved {len(chunks)} chunks"
+            f"{self.agent_name}: retrieved {len(chunks)} chunks (after Rerank)"
         )
 
-        self.log_step(f"retrieved {len(chunks)} chunks from '{collection_name}'")
         return state

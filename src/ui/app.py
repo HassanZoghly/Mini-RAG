@@ -59,21 +59,44 @@ with st.expander("📂 Upload lectures", expanded=True):
                     icon = "📝"
                 st.caption(f"{icon} {f.name}")
 
-# ── helpers ────────────────────────────────────────────────────────────────────
+# ── Sidebar (القائمة الجانبية) ────────────────────────────────────────────────
+with st.sidebar:
+    st.title("🛠️ أدوات المحاضرات")
+    st.divider()
 
+    # 1. القائمة المنسدلة لاختيار المحاضرة
+    file_options = ["جميع المحاضرات"] + [f.name for f in uploaded_files] if uploaded_files else ["جميع المحاضرات"]
+    selected_file = st.selectbox("📄 المحاضرة المستهدفة:", file_options)
+
+    # 2. لغة المخرجات
+    tool_lang = st.radio("🌍 لغة المخرجات:", ["English", "العربية"], horizontal=True)
+
+    st.divider()
+
+    # 3. قسم التلخيص
+    st.subheader("📋 التلخيص")
+    sum_btn = st.button("إنشاء ملخص", use_container_width=True)
+
+    st.divider()
+
+    # 4. قسم الاختبار (مع تحديد عدد الأسئلة)
+    st.subheader("🧠 الاختبار (Quiz)")
+    num_questions = st.number_input("🔢 عدد الأسئلة:", min_value=1, max_value=50, value=5, step=1)
+    quiz_btn = st.button("توليد أسئلة", use_container_width=True)
+
+# 💡 الفلترة الذكية (تجهيز الملفات للباك-إند)
+if selected_file == "جميع المحاضرات":
+    target_files = uploaded_files
+else:
+    target_files = [f for f in uploaded_files if f.name == selected_file]
+
+# ── helpers ────────────────────────────────────────────────────────────────────
 def build_files_payload(files):
-    """Convert Streamlit UploadedFile list → multipart files list."""
     if not files:
         return []
     return [("files", (f.name, f.getvalue(), f.type)) for f in files]
 
-
 def stream_query(query: str, files) -> str:
-    """
-    POST to /api/v1/nlp/multimodal-query/stream.
-    Renders streaming tokens into the current Streamlit context.
-    Returns the full assembled response text.
-    """
     form_data = {
         "query":      query,
         "project_id": PROJECT_ID,
@@ -104,9 +127,7 @@ def stream_query(query: str, files) -> str:
                     if token == "[DONE]":
                         break
 
-                    # التعديل هنا: استرجاع الـ Newlines المخبأة عشان التنسيق يظهر صح
                     token = token.replace("\\n", "\n")
-
                     full_text += token
                     placeholder.markdown(full_text + "▌")
         placeholder.markdown(full_text)
@@ -115,20 +136,11 @@ def stream_query(query: str, files) -> str:
 
     return full_text
 
-
 def fetch_trace_and_sources(query: str, files) -> tuple[list, list]:
-    """
-    Fire a non-streaming request to get agent_trace and sources_used.
-    Returns (agent_trace, sources_used) — both empty lists on failure.
-    """
     try:
         resp = requests.post(
             f"{API_URL}/v1/nlp/multimodal-query",
-            data={
-                "query":      query,
-                "project_id": PROJECT_ID,
-                "session_id": SESSION_ID,
-            },
+            data={"query": query, "project_id": PROJECT_ID, "session_id": SESSION_ID},
             files=build_files_payload(files) or None,
             timeout=60,
         )
@@ -152,6 +164,39 @@ for msg in st.session_state.chat_history:
                 for step in msg["agent_trace"]:
                     st.markdown(f"- `{step}`")
 
+# ── Sidebar Actions Processing ─────────────────────────────────────────────────
+lang_instruction = "in English" if tool_lang == "English" else "باللغة العربية"
+target_instruction = "all the provided lectures" if selected_file == "جميع المحاضرات" else f"ONLY the lecture titled '{selected_file}'"
+
+if sum_btn:
+    SUMMARY_QUERY = f"Summarize {target_instruction} {lang_instruction}"
+    display_text = f"Summarize {selected_file} ({tool_lang})"
+    st.session_state.chat_history.append({"role": "user", "content": display_text})
+    with st.chat_message("user"):
+        st.markdown(display_text)
+    with st.chat_message("assistant"):
+        with st.spinner("جاري إعداد الملخص... ⏳"):
+            answer = stream_query(SUMMARY_QUERY, target_files)
+    st.toast("✅ اكتمل الملخص!", icon="✅")
+    if answer:
+        st.session_state.chat_history.append({"role": "assistant", "content": f"**Summary**\n\n{answer}"})
+        st.rerun()
+
+if quiz_btn:
+    # تضمين عدد الأسئلة بين قوسين ليتمكن الباك-إند من قراءته
+    QUIZ_QUERY = f"Generate quiz [{num_questions}] for {target_instruction} {lang_instruction}"
+    display_text = f"Quiz ({num_questions} questions) on {selected_file} ({tool_lang})"
+    st.session_state.chat_history.append({"role": "user", "content": display_text})
+    with st.chat_message("user"):
+        st.markdown(display_text)
+    with st.chat_message("assistant"):
+        with st.spinner("جاري إعداد الأسئلة... ⏳"):
+            answer = stream_query(QUIZ_QUERY, target_files)
+    st.toast("✅ اكتملت الأسئلة!", icon="✅")
+    if answer:
+        st.session_state.chat_history.append({"role": "assistant", "content": f"**Quiz**\n\n{answer}"})
+        st.rerun()
+
 # ── chat input ─────────────────────────────────────────────────────────────────
 user_input = st.chat_input("Ask anything about your documents...")
 
@@ -161,9 +206,11 @@ if user_input:
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        answer = stream_query(user_input, uploaded_files)
+        with st.spinner("جاري التفكير وصياغة الرد... ⏳"):
+            answer = stream_query(user_input, target_files)
 
-    trace, sources = fetch_trace_and_sources(user_input, uploaded_files)
+    st.toast("✅ اكتمل الرد! النظام جاهز لسؤالك التالي.", icon="✅")
+    trace, sources = fetch_trace_and_sources(user_input, target_files)
 
     st.session_state.chat_history.append({
         "role":        "assistant",
@@ -171,37 +218,4 @@ if user_input:
         "sources_used": sources,
         "agent_trace": trace,
     })
-
-# ── document tools ─────────────────────────────────────────────────────────────
-st.divider()
-col_sum, col_quiz = st.columns(2)
-
-with col_sum:
-    if st.button("📋 Summarize lectures", use_container_width=True):
-        SUMMARY_QUERY = "summarize"
-        st.session_state.chat_history.append({"role": "user", "content": "Summarize lectures"})
-        with st.chat_message("user"):
-            st.markdown("Summarize lectures")
-        with st.chat_message("assistant"):
-            with st.spinner("Summarizing..."):
-                answer = stream_query(SUMMARY_QUERY, uploaded_files)
-        if answer:
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": f"**Summary**\n\n{answer}",
-            })
-
-with col_quiz:
-    if st.button("🧠 Generate quiz", use_container_width=True):
-        QUIZ_QUERY = "generate quiz"
-        st.session_state.chat_history.append({"role": "user", "content": "Generate quiz"})
-        with st.chat_message("user"):
-            st.markdown("Generate quiz")
-        with st.chat_message("assistant"):
-            with st.spinner("Generating quiz..."):
-                answer = stream_query(QUIZ_QUERY, uploaded_files)
-        if answer:
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": f"**Quiz**\n\n{answer}",
-            })
+    st.rerun()

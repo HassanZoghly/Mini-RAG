@@ -8,8 +8,8 @@ from typing import List, Union
 class CoHereProvider(LLMInterface):
 
     def __init__(self, api_key: str,
-                       default_input_max_characters: int=40000,
-                       default_generation_max_output_tokens: int=3000,
+                       default_input_max_characters: int=400000,
+                       default_generation_max_output_tokens: int=4000,
                        default_generation_temperature: float=0.1):
 
         self.api_key = api_key
@@ -71,7 +71,7 @@ class CoHereProvider(LLMInterface):
 
         loop = asyncio.get_event_loop()
         queue = asyncio.Queue()
-        
+
         def _run():
             try:
                 response = self.client.chat_stream(
