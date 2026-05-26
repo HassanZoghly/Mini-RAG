@@ -72,6 +72,62 @@ with st.sidebar:
     tool_lang = st.radio("🌍 لغة المخرجات:", ["English", "العربية"], horizontal=True)
 
     st.divider()
+    st.subheader("🎨 الرسوم التوضيحية (Napkin AI)")
+    st.caption("اختر نوع الرسم واضغط على الزر لتحويل آخر إجابة إلى رسمة:")
+
+    # قائمة بأنواع الرسومات لتوجيه Napkin
+    vis_options = {
+        "خريطة ذهنية (Mind Map)": "Mind Map",
+        "مخطط انسيابي (Flowchart)": "Flowchart",
+        "هيكل تنظيمي (Hierarchy)": "Hierarchy diagram",
+        "مقارنة (Comparison)": "Comparison table or diagram",
+        "دورة حياة (Cycle)": "Cycle diagram"
+    }
+    selected_vis_ar = st.selectbox("نوع الرسم:", list(vis_options.keys()))
+    selected_vis_en = vis_options[selected_vis_ar]
+
+    if st.button("🎨 ارسم الإجابة الأخيرة", use_container_width=True):
+        # البحث عن آخر إجابة للموديل في الشات
+        last_assistant_msg = None
+        for msg in reversed(st.session_state.chat_history):
+            if msg["role"] == "assistant" and "<img" not in msg["content"]:
+                last_assistant_msg = msg["content"]
+                break
+
+        if not last_assistant_msg:
+            st.toast("⚠️ لا توجد إجابة سابقة لرسمها!", icon="⚠️")
+        else:
+            with st.spinner(f"جاري إنشاء {selected_vis_ar}... ⏳"):
+                try:
+                    # توجيه Napkin بشكل صريح لنوع الرسمة المطلوبة
+                    vis_prompt = f"Please strictly generate a {selected_vis_en} for the following content:\n\n{last_assistant_msg}"
+
+                    res = requests.post(
+                        f"{API_URL}/v1/nlp/visualize",
+                        json={"text": vis_prompt},
+                        timeout=120
+                    )
+
+                    if res.ok:
+                        data = res.json()
+                        b64_list = data.get("images_base64", [])
+                        if b64_list:
+                            html_images = ""
+                            for b64 in b64_list:
+                                # 🔥 السر هنا: استخدام HTML لتصغير الحجم (width="60%") وعمل توسيط للصورة
+                                html_images += f'<div style="text-align: center;"><img src="data:image/png;base64,{b64}" width="65%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin-bottom: 20px;"/></div>'
+
+                            st.session_state.chat_history.append({
+                                "role": "assistant",
+                                "content": f"**تم توليد: {selected_vis_ar}**\n\n{html_images}"
+                            })
+                            st.rerun()
+                        else:
+                            st.error("لم يتم إرجاع أي رسمة من السيرفر.")
+                    else:
+                        st.error(f"خطأ في الاتصال: {res.text}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
     # 3. قسم التلخيص
     st.subheader("📋 التلخيص")
@@ -96,11 +152,12 @@ def build_files_payload(files):
         return []
     return [("files", (f.name, f.getvalue(), f.type)) for f in files]
 
-def stream_query(query: str, files) -> str:
+def stream_query(query: str, files, visualize: bool = False) -> str:
     form_data = {
         "query":      query,
         "project_id": PROJECT_ID,
         "session_id": SESSION_ID,
+        "visualize":  str(visualize).lower()
     }
     files_payload = build_files_payload(files)
 
@@ -154,7 +211,7 @@ def fetch_trace_and_sources(query: str, files) -> tuple[list, list]:
 # ── chat history display ───────────────────────────────────────────────────────
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        st.markdown(msg["content"], unsafe_allow_html=True)
         if msg.get("sources_used"):
             with st.expander("Sources used", expanded=False):
                 for s in msg["sources_used"]:

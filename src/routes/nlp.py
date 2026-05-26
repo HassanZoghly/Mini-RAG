@@ -272,7 +272,7 @@ async def generate_visualization(request: VisualizeRequest):
                     }
                 )
 
-            # التعديل الصحيح لاستخراج الرابط المباشر
+            # التعديل هنا لجلب كل الرسومات مش رسمة واحدة بس
             generated_files = status_data.get("generated_files", [])
 
             if not generated_files or len(generated_files) == 0:
@@ -284,16 +284,22 @@ async def generate_visualization(request: VisualizeRequest):
                     }
                 )
 
-            file_url = generated_files[0].get("url")
+            images_base64 = []
 
-            file_res = await client.get(file_url, headers=headers)
+            # حلقة تكرارية لتحميل كل الصور اللي Napkin ولدها
+            for f in generated_files:
+                file_url = f.get("url")
+                if file_url:
+                    file_res = await client.get(file_url, headers=headers)
+                    if file_res.status_code == 200:
+                        img_base64 = base64.b64encode(file_res.content).decode("utf-8")
+                        images_base64.append(img_base64)
 
-            if file_res.status_code == 200:
-                img_base64 = base64.b64encode(file_res.content).decode("utf-8")
+            if images_base64:
                 return JSONResponse(
                     content={
                         "signal": ResponseSignal.NAPKIN_SUCCESS.value,
-                        "image_base64": img_base64
+                        "images_base64": images_base64  # إرجاع مصفوفة من الصور
                     }
                 )
             else:
@@ -301,7 +307,7 @@ async def generate_visualization(request: VisualizeRequest):
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     content={
                         "signal": ResponseSignal.NAPKIN_DOWNLOAD_ERROR.value,
-                        "error": f"Failed to download image. HTTP {file_res.status_code}: {file_res.text}"
+                        "error": "Failed to download generated images."
                     }
                 )
 
@@ -546,12 +552,10 @@ async def multimodal_query_stream(
     query: str = Form(...),
     project_id: str = Form(...),
     session_id: str = Form(default="default"),
+    visualize: bool = Form(default=False), # <-- تم إضافة متغير الرسم هنا
     files: list[UploadFile] = File(default=[])
 ):
     tmp_dir = tempfile.mkdtemp()
-
-    # We must delay the cleanup until the stream finishes.
-    # We'll use a background task or just yield the cleanup manually.
 
     saved_paths = []
     for f in files:
@@ -562,7 +566,6 @@ async def multimodal_query_stream(
             out.write(await f.read())
         saved_paths.append(dest)
 
-    # multi_processor = MultiFileProcessor(request.app.process_controller)
     multi_processor = MultiFileProcessor()
     file_state = await multi_processor.process_files(saved_paths)
 
@@ -576,14 +579,35 @@ async def multimodal_query_stream(
     initial_state.update({k: v for k, v in file_state.items()
                            if k not in ("image_paths", "uploaded_files")})
     initial_state["metadata"]["session_id"] = session_id
+    initial_state["metadata"]["visualize"] = visualize # حفظ اختيار المستخدم
 
     async def event_generator():
         try:
             state = await request.app.agent_graph.run_multimodal_up_to_formatter(initial_state)
 
             formatter = request.app.agent_graph._response_formatter
+            full_text = ""
             async for token in formatter.stream_execute(state):
+                full_text += token.replace("\\n", "\n")
                 yield f"data: {token}\n\n"
+
+            # 🔥 الجزء الجديد الخاص بتوليد الرسمة بعد انتهاء الكتابة
+            if state.get("metadata", {}).get("visualize"):
+                yield f"data: \\n\\n⏳ *جاري إنشاء رسوم توضيحية للملخص (Napkin AI)...*\\n\\n"
+
+                state["final_response"] = full_text
+                from agents.visualization.VisualizationAgent import VisualizationAgent
+                vision_agent = VisualizationAgent()
+                state = await vision_agent.execute(state)
+
+                vis_urls = state.get("visualization_urls", [])
+                if vis_urls:
+                    yield f"data: \\n\\n### 🎨 رسوم ومخططات توضيحية:\\n\\n"
+                    # عرض كل الصور تحت بعضها
+                    for idx, v_url in enumerate(vis_urls):
+                        md_img = f"![Visualization {idx+1}]({v_url})\\n\\n"
+                        yield f"data: {md_img}\n\n"
+
             yield "data: [DONE]\n\n"
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)

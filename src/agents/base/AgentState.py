@@ -70,6 +70,7 @@ class AgentState(TypedDict):
     image_base64: List[dict]
     fusion_strategy: str
     sources_used: List[str]
+    visualization_urls: List[str]
 
 
 def create_initial_state(
@@ -78,6 +79,7 @@ def create_initial_state(
     asset_ids: List[str],
     image_paths: List[str],
     uploaded_files: Optional[List[dict]] = None,
+    visualization_urls=[],
 ) -> AgentState:
     """
     Factory function that returns a fully-initialised ``AgentState`` with

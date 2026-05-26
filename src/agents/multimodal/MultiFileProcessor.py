@@ -104,13 +104,27 @@ class MultiFileProcessor:
 
         # OCR fallback if text is too short or fitz failed
         if len(full_text) < 50 and convert_from_path and pytesseract:
-            logger.info(f"Using OCR fallback for {file_path}")
+            logger.info(f"Using OCR fallback and converting pages to images for {file_path}")
             try:
                 pages = convert_from_path(file_path)
                 ocr_parts = []
-                for page in pages:
+                import io # مكتبة ضرورية للتعامل مع الصور في الذاكرة
+
+                for idx, page in enumerate(pages):
+                    # 1. استخراج نص مبدئي (اختياري)
                     text = pytesseract.image_to_string(page, lang="eng+ara")
                     ocr_parts.append(text)
+
+                    # 2. 🔥 التعديل الأهم: حفظ الصفحة كصورة وتمريرها للـ Vision Agent
+                    img_byte_arr = io.BytesIO()
+                    page.save(img_byte_arr, format='PNG')
+                    b64_data = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+                    images.append({
+                        "file_name": f"{file_name}_scanned_page_{idx+1}.png",
+                        "b64": b64_data,
+                        "mime": "image/png"
+                    })
+
                 full_text = "\n".join(ocr_parts).strip()
             except Exception as e:
                 logger.warning(f"OCR fallback failed on {file_path}: {e}")
