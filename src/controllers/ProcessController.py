@@ -15,6 +15,7 @@ from models import ProcessingEnum
 
 from .BaseController import BaseController
 from .ProjectController import ProjectController
+from utils.tokenizer import count_tokens
 
 import pytesseract
 from pdf2image import convert_from_path
@@ -77,7 +78,23 @@ class ProcessController(BaseController):
         return None
 
     def process_file_content(self, file_content: list, file_id: str,
-                            chunk_size: int = 100, overlap_size: int = 20):
+                            chunk_size: int = 800, overlap_size: int = 125):
+        """
+        Split a file's extracted pages/records into chunks.
+
+        ``chunk_size``/``overlap_size`` are expressed in **tokens** (not
+        characters) — see ``utils.tokenizer.count_tokens``. The
+        recommended ranges are 700-1000 tokens per chunk with 100-150
+        tokens of overlap, which keeps enough context for retrieval while
+        still allowing accurate, focused answers.
+
+        Every produced chunk is stamped with:
+        - ``source``      → ``file_id`` (the lecture/file name)
+        - ``chunk_index`` → 1-based position of the chunk within this file
+        - ``section``     → nearest preceding markdown heading, if any
+        - ``page``        → preserved from the original extraction metadata
+                            (PDF pages already set this)
+        """
 
         file_content_texts = [
             rec.page_content
@@ -96,6 +113,14 @@ class ProcessController(BaseController):
             overlap_size=overlap_size,
         )
 
+        # Normalise/augment metadata for every chunk so downstream features
+        # (citations, ordered full-lecture retrieval, dynamic filtering by
+        # lecture/section) have consistent fields regardless of file type.
+        for idx, chunk in enumerate(chunks):
+            chunk.metadata = dict(chunk.metadata or {})
+            chunk.metadata["source"] = file_id
+            chunk.metadata["chunk_index"] = idx + 1
+
         return chunks
 
     def process_markdown_splitter(self, texts: List[str], metadatas: List[dict],
@@ -104,6 +129,7 @@ class ProcessController(BaseController):
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=overlap_size,
+            length_function=count_tokens,
             separators=[
                 "\n```",
                 "\n\n|",
@@ -126,10 +152,15 @@ class ProcessController(BaseController):
             if not normalized_text.strip():
                 continue
 
-            if len(normalized_text) <= chunk_size:
+            if count_tokens(normalized_text) <= chunk_size:
+                chunk_metadata = dict(metadata)
+                section = self._first_heading(normalized_text)
+                if section:
+                    chunk_metadata["section"] = section
+
                 chunks.append(Document(
                     page_content=normalized_text,
-                    metadata=metadata
+                    metadata=chunk_metadata
                 ))
                 continue
 
@@ -141,14 +172,26 @@ class ProcessController(BaseController):
                 overlap_size=overlap_size,
             )
 
-            for chunk_text in page_chunks:
+            for chunk_text, section in page_chunks:
                 if chunk_text.strip():
+                    chunk_metadata = dict(metadata)
+                    if section:
+                        chunk_metadata["section"] = section
+
                     chunks.append(Document(
                         page_content=chunk_text.strip(),
-                        metadata=metadata
+                        metadata=chunk_metadata
                     ))
 
         return chunks
+
+    def _first_heading(self, text: str) -> str:
+        """Return the first markdown heading found in *text*, if any."""
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                return stripped.lstrip("#").strip()
+        return ""
 
     def extract_pdf_as_markdown(self, file_path: str) -> List[Document]:
         doc = fitz.open(file_path)
@@ -655,32 +698,42 @@ class ProcessController(BaseController):
         return {"type": "paragraph", "text": text}
 
     def build_chunks_from_blocks(self, blocks: List[Dict[str, str]], splitter: RecursiveCharacterTextSplitter,
-                                 chunk_size: int, overlap_size: int) -> List[str]:
-        chunks = []
+                                 chunk_size: int, overlap_size: int) -> List[Tuple[str, str]]:
+        """
+        Build chunks from markdown blocks.
+
+        Returns a list of ``(chunk_text, section)`` tuples where
+        ``section`` is the nearest preceding heading text (or ``""`` if
+        none was seen yet). Sizing decisions use ``count_tokens`` so
+        ``chunk_size``/``overlap_size`` are interpreted as token counts.
+        """
+        chunks: List[Tuple[str, str]] = []
         current_blocks = []
+        current_section = ""
+        chunk_section = ""
 
         def build_text(items: List[str]) -> str:
             return "\n\n".join(items).strip()
 
         def append_current_chunk():
-            nonlocal current_blocks
+            nonlocal current_blocks, chunk_section
             if not current_blocks:
                 return
 
             chunk_text = build_text(current_blocks)
             if chunk_text:
-                chunks.append(chunk_text)
+                chunks.append((chunk_text, chunk_section))
 
             if overlap_size <= 0:
                 current_blocks = []
                 return
 
             overlap_blocks = []
-            overlap_length = 0
+            overlap_tokens = 0
             for previous_block in reversed(current_blocks):
                 overlap_blocks.insert(0, previous_block)
-                overlap_length += len(previous_block) + 2
-                if overlap_length >= overlap_size:
+                overlap_tokens += count_tokens(previous_block)
+                if overlap_tokens >= overlap_size:
                     break
 
             current_blocks = overlap_blocks
@@ -693,21 +746,31 @@ class ProcessController(BaseController):
             block_type = block.get("type", "paragraph")
             protected_block = block_type in {"code", "table"}
 
-            if len(block_text) > chunk_size and not protected_block:
+            if block_type == "heading":
+                current_section = block_text.lstrip("#").strip()
+
+            # The section a chunk is tagged with is whatever section was
+            # active when its first block was added.
+            if not current_blocks:
+                chunk_section = current_section
+
+            if count_tokens(block_text) > chunk_size and not protected_block:
                 append_current_chunk()
 
                 split_texts = splitter.split_text(block_text)
                 for segment in split_texts:
                     stripped_segment = segment.strip()
                     if stripped_segment:
-                        chunks.append(stripped_segment)
+                        chunks.append((stripped_segment, current_section))
                 continue
 
             candidate_blocks = current_blocks + [block_text]
             candidate_text = build_text(candidate_blocks)
-            if current_blocks and len(candidate_text) > chunk_size:
+            if current_blocks and count_tokens(candidate_text) > chunk_size:
                 append_current_chunk()
                 current_blocks.append(block_text)
+                if len(current_blocks) == 1:
+                    chunk_section = current_section
             else:
                 current_blocks = candidate_blocks
 
