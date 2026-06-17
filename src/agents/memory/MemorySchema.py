@@ -4,48 +4,25 @@ from datetime import datetime, timezone
 import uuid
 
 
-class MemoryRecord(TypedDict):
+class MemoryRecord(TypedDict, total=False):
     """
     Typed dictionary that represents a single memory entry in the
     semantic memory system.
 
-    Memories are stored in the vector database so that retrieval is
-    driven by *semantic similarity* rather than chronological order.
-    All fields are serialised to JSON and stored as the vector-DB text
-    payload so that they survive a round-trip through the embedding +
-    search pipeline.
+    Phase 5 additions
+    -----------------
+    ``preference_data`` : dict | None
+        Arbitrary key-value dict stored alongside ``"preference"`` type
+        records.  Used to persist per-session settings such as the student's
+        chosen teaching mode, detected explanation-style preference, and
+        language.  Not embedded — only stored as metadata in ``summary``.
 
-    Fields
-    ------
-    memory_id : str
-        Universally unique identifier (UUID4) for this memory record.
-    session_id : str
-        Identifier of the conversation or user session that produced
-        this memory.  Used to namespace separate memory collections in
-        the vector database.
-    memory_type : str
-        Category of the memory.  One of:
-        * ``"short_term"``  – recent interactions not yet consolidated.
-        * ``"long_term"``   – consolidated, durable knowledge.
-        * ``"semantic"``    – factual / conceptual knowledge extracted
-                              from documents.
-        * ``"episodic"``    – event-based memories tied to a specific
-                              moment in the conversation.
-    content : str
-        The raw, uncompressed text of the memory (e.g. the original
-        question + answer pair).  This is the field that is embedded
-        and searched against.
-    summary : str
-        A condensed, human-readable summary of *content*.  May be
-        identical to *content* for short memories, or an LLM-generated
-        compression for long ones.
-    timestamp : str
-        ISO 8601 UTC timestamp indicating when the memory was created
-        (e.g. ``"2026-05-24T01:48:00+00:00"``).
-    importance_score : float
-        A scalar in ``[0.0, 1.0]`` reflecting how important this memory
-        is considered to be.  Higher values persist through consolidation;
-        lower values are pruned first.
+    ``topics_covered`` : list[str] | None
+        Filled on ``"progress"`` type records.  Tracks the lecture topics
+        the student has asked about so the tutor can acknowledge already-
+        explained concepts without repeating them at length.
+
+    All other fields are the same as before.
     """
 
     memory_id: str
@@ -55,6 +32,9 @@ class MemoryRecord(TypedDict):
     summary: str
     timestamp: str
     importance_score: float
+    # Optional extended fields (phase 5)
+    preference_data: Optional[dict]
+    topics_covered: Optional[list]
 
 
 def create_memory_record(
@@ -63,10 +43,12 @@ def create_memory_record(
     memory_type: str,
     summary: str,
     importance_score: float = 0.5,
+    preference_data: Optional[dict] = None,
+    topics_covered: Optional[list] = None,
 ) -> MemoryRecord:
     """
-    Factory function that constructs a ``MemoryRecord`` with a fresh UUID
-    and the current UTC timestamp.
+    Factory that constructs a ``MemoryRecord`` with a fresh UUID and the
+    current UTC timestamp.
 
     Parameters
     ----------
@@ -76,24 +58,30 @@ def create_memory_record(
         Full text content to be embedded and stored.
     memory_type : str
         One of ``"short_term"``, ``"long_term"``, ``"semantic"``,
-        or ``"episodic"``.
+        ``"episodic"``, ``"preference"``, or ``"progress"``.
     summary : str
         Condensed human-readable description of *content*.
     importance_score : float, optional
         Importance weight in ``[0.0, 1.0]``.  Defaults to ``0.5``.
+    preference_data : dict, optional
+        Key-value settings to persist on ``"preference"`` records.
+    topics_covered : list, optional
+        Topic labels to persist on ``"progress"`` records.
 
     Returns
     -------
     MemoryRecord
-        A fully initialised memory record ready to be passed to
-        ``MemoryStore.store_memory``.
+        A fully initialised memory record ready for ``MemoryStore.store_memory``.
     """
-    return MemoryRecord(
-        memory_id=str(uuid.uuid4()),
-        session_id=session_id,
-        memory_type=memory_type,
-        content=content,
-        summary=summary,
-        timestamp=datetime.now(tz=timezone.utc).isoformat(),
-        importance_score=importance_score,
-    )
+    record: MemoryRecord = {
+        "memory_id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "memory_type": memory_type,
+        "content": content,
+        "summary": summary,
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        "importance_score": importance_score,
+        "preference_data": preference_data,
+        "topics_covered": topics_covered,
+    }
+    return record

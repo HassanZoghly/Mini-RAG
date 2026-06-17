@@ -4,6 +4,7 @@ from controllers.ProcessController import ProcessController
 from agents.graph.AgentGraph import AgentGraph
 from agents.router.RouterAgent import RouterAgent
 from agents.retrieval.RetrievalAgent import RetrievalAgent
+from agents.retrieval.QueryRewriterAgent import QueryRewriterAgent
 from agents.memory.MemoryStore import MemoryStore
 from agents.memory.MemoryAgent import MemoryAgent
 from agents.multimodal.OCRAgent import OCRAgent
@@ -24,8 +25,17 @@ class GraphFactory:
     * ``app.generation_client``  — LLM provider for text generation.
     * ``app.embedding_client``   — LLM provider for embedding.
     * ``app.vectordb_client``    — Vector-DB client (Qdrant / PGVector).
+    * ``app.reranker_client``    — Reranker provider (Cohere, etc.).
     * ``app.template_parser``    — ``TemplateParser`` for prompt rendering.
     * ``app.db_client``          — SQLAlchemy async session factory.
+
+    Phase 4 changes
+    ---------------
+    * ``QueryRewriterAgent`` is instantiated and passed to ``AgentGraph``
+      so it is wired between ``memory`` and ``retrieval`` in all four
+      graph builders.
+    * ``RetrievalAgent`` now receives ``db_client`` so it can call
+      ``ChunkModel.get_all_chunks_ordered`` for summary queries.
 
     Usage
     -----
@@ -40,18 +50,6 @@ class GraphFactory:
         """
         Instantiate every agent with the correct dependencies and return
         a wired ``AgentGraph``.
-
-        Parameters
-        ----------
-        app : FastAPI
-            The running FastAPI application with all clients already set
-            as direct attributes.
-
-        Returns
-        -------
-        AgentGraph
-            A fully wired graph instance whose ``run`` and ``stream``
-            methods are ready to be called from route handlers.
         """
         generation_client = app.generation_client
         embedding_client  = app.embedding_client
@@ -60,7 +58,7 @@ class GraphFactory:
         db_client         = app.db_client
         reranker_client   = app.reranker_client
 
-        # NLPController — used for _flatten_vector and memory store embedding
+        # NLPController — shared helper for _flatten_vector and collection naming
         nlp_controller = NLPController(
             vectordb_client=vectordb_client,
             generation_client=generation_client,
@@ -68,31 +66,38 @@ class GraphFactory:
             template_parser=template_parser,
         )
 
-        # ProcessController — OCRAgent uses pytesseract via this controller.
-        # project_id is empty here because OCRAgent calls pytesseract directly
-        # on image file paths that are independent of any project directory.
+        # ProcessController — used by OCRAgent for image pre-processing
         process_controller = ProcessController(project_id="")
 
-        # Memory store — wraps nlp_controller for semantic memory operations
+        # MemoryStore — semantic memory backed by pgvector
         memory_store = MemoryStore(
             nlp_controller=nlp_controller,
-            async_session_maker=db_client  # <--- تمرير الـ Session Maker هنا
+            async_session_maker=db_client,
         )
 
-        # -- Instantiate all agents -------------------------------------
+        # -- Agents --------------------------------------------------------
+
         router_agent = RouterAgent(
             llm_provider=generation_client,
         )
 
+        # Phase 4: db_client passed so summary queries can use ordered retrieval
         retrieval_agent = RetrievalAgent(
             embedding_client=embedding_client,
             vectordb_client=vectordb_client,
             nlp_controller=nlp_controller,
             reranker_client=reranker_client,
+            db_client=db_client,
         )
 
         memory_agent = MemoryAgent(
             memory_store=memory_store,
+        )
+
+        # Phase 4: QueryRewriterAgent — rewrites follow-up questions using
+        # session memory before retrieval runs (item 4A)
+        query_rewriter_agent = QueryRewriterAgent(
+            llm_provider=generation_client,
         )
 
         ocr_agent = OCRAgent(
@@ -126,4 +131,5 @@ class GraphFactory:
             reasoning=reasoning_agent,
             response_formatter=response_formatter_agent,
             smalltalk=smalltalk_agent,
+            query_rewriter=query_rewriter_agent,
         )
