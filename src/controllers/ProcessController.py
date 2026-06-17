@@ -46,7 +46,7 @@ class ProcessController(BaseController):
     # ─────────────────────────────────────────────────────────
 
     def get_file_extension(self, file_id: str):
-        return os.path.splitext(file_id)[-1]
+        return os.path.splitext(file_id)[-1].lower()
 
     def get_file_loader(self, file_id: str):
 
@@ -67,9 +67,42 @@ class ProcessController(BaseController):
     def get_file_content(self, file_id: str):
 
         file_ext = self.get_file_extension(file_id=file_id)
+        file_path = os.path.join(self.project_path, file_id)
+
+        if not os.path.exists(file_path):
+            return None
+
         if file_ext == ProcessingEnum.PDF.value:
-            file_path = os.path.join(self.project_path, file_id)
             return self.extract_pdf_as_markdown(file_path=file_path)
+
+        if file_ext in self.TEXT_EXTENSIONS:
+            text = self.extract_text_file(file_path=file_path)
+            if text.strip():
+                return [
+                    Document(
+                        page_content=text,
+                        metadata={
+                            "source": file_id,
+                            "file_type": "text",
+                        },
+                    )
+                ]
+            return None
+
+        if file_ext in self.IMAGE_EXTENSIONS:
+            text = self.extract_image_text(file_path=file_path)
+            if text.strip():
+                return [
+                    Document(
+                        page_content=text,
+                        metadata={
+                            "source": file_id,
+                            "file_type": "image",
+                            "ocr_used": True,
+                        },
+                    )
+                ]
+            return None
 
         loader = self.get_file_loader(file_id=file_id)
         if loader:

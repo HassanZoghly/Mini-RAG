@@ -69,6 +69,7 @@ class RetrievalAgent(BaseAgent):
         project_id: str = state["project_id"]
         asset_ids: List[str] = state.get("asset_ids") or []
         route: str = state.get("metadata", {}).get("route", "")
+        project_db_id = await self._resolve_project_db_id(project_id)
 
         # Use the rewritten query for embedding if available (item 4A)
         retrieval_query: str = state.get("query_for_retrieval") or query
@@ -77,7 +78,7 @@ class RetrievalAgent(BaseAgent):
 
         # ── SUMMARY: ordered full-lecture retrieval ──────────────────────
         if task_type == TASK_SUMMARY:
-            chunks = await self._fetch_ordered_chunks(project_id, asset_ids)
+            chunks = await self._fetch_ordered_chunks(project_db_id, asset_ids)
             state["retrieved_chunks"] = chunks
             state["agent_trace"].append(
                 f"{self.agent_name}: summary path — {len(chunks)} ordered chunks loaded"
@@ -95,8 +96,9 @@ class RetrievalAgent(BaseAgent):
             f"query='{retrieval_query[:60]}'"
         )
 
-        vector_size = self._vectordb_client.default_vector_size
-        collection_name = f"collection_{vector_size}_{project_id}".strip()
+        collection_name = self._nlp_controller.create_collection_name(
+            project_id=project_db_id
+        )
 
         # ── Embed query ──────────────────────────────────────────────────
         try:
@@ -190,8 +192,37 @@ class RetrievalAgent(BaseAgent):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    async def _resolve_project_db_id(self, project_id: str) -> int:
+        """
+        Resolve the string project_id (UUID or slug) to the integer
+        ``project_id`` (primary key) stored in the ``projects`` table.
+
+        When ``db_client`` is available the lookup is performed via
+        ``ProjectModel``.  If no ``db_client`` is configured (e.g. in
+        tests) the raw value is returned unchanged so vector-search
+        collection naming still works (it only needs a stable string).
+        """
+        if not self._db_client:
+            return project_id  # type: ignore[return-value]
+
+        try:
+            from models.ProjectModel import ProjectModel
+
+            project_model = await ProjectModel.create_instance(
+                db_client=self._db_client
+            )
+            project = await project_model.get_project_or_create_one(
+                project_id=project_id
+            )
+            return project.project_id
+        except Exception as exc:
+            self.log_step(
+                f"_resolve_project_db_id failed ({exc}) — using raw project_id"
+            )
+            return project_id  # type: ignore[return-value]
+
     async def _fetch_ordered_chunks(
-        self, project_id: str, asset_ids: List[str]
+        self, project_id, asset_ids: List[str]
     ) -> List[dict]:
         """
         Pull ALL ordered chunks for the project from the relational DB.
@@ -212,7 +243,7 @@ class RetrievalAgent(BaseAgent):
 
             chunk_model = await ChunkModel.create_instance(db_client=self._db_client)
             orm_chunks = await chunk_model.get_all_chunks_ordered(
-                project_id=int(project_id),
+                project_id=project_id,
                 asset_ids=asset_ids or [],
                 max_chunks=2000,
             )

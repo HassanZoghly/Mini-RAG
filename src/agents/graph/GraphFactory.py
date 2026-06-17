@@ -1,5 +1,5 @@
-from controllers.NLPController import NLPController
-from controllers.ProcessController import ProcessController
+from controllers.NLPController import NLPController as _NLPController
+from controllers.ProcessController import ProcessController as _ProcessController
 
 from agents.graph.AgentGraph import AgentGraph
 from agents.router.RouterAgent import RouterAgent
@@ -59,7 +59,7 @@ class GraphFactory:
         reranker_client   = app.reranker_client
 
         # NLPController — shared helper for _flatten_vector and collection naming
-        nlp_controller = NLPController(
+        nlp_controller = _NLPController(
             vectordb_client=vectordb_client,
             generation_client=generation_client,
             embedding_client=embedding_client,
@@ -67,7 +67,7 @@ class GraphFactory:
         )
 
         # ProcessController — used by OCRAgent for image pre-processing
-        process_controller = ProcessController(project_id="")
+        process_controller = _ProcessController(project_id="")
 
         # MemoryStore — semantic memory backed by pgvector
         memory_store = MemoryStore(

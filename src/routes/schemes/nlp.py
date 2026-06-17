@@ -12,7 +12,7 @@ Changes:
   compatibility — existing callers that don't send them keep working.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 
@@ -32,9 +32,9 @@ class VisualizeRequest(BaseModel):
 class AgentQueryRequest(BaseModel):
     query: str
     project_id: str
-    asset_ids: List[str] = []
+    asset_ids: List[str] = Field(default_factory=list)
     session_id: str = "default"
-    image_paths: List[str] = []
+    image_paths: List[str] = Field(default_factory=list)
     # Teaching mode selected for this query (item 7).
     # One of: "quick_review" | "full_explanation" | "exam_prep" |
     #         "step_by_step" | "" (empty = use stored preference or default)
@@ -75,6 +75,6 @@ class SummaryRequest(BaseModel):
     summarising the entire project in English when omitted.
     """
     # Limit summary to these asset IDs (lecture files).  Empty = all files.
-    asset_ids: Optional[List[str]] = []
+    asset_ids: Optional[List[str]] = Field(default_factory=list)
     # Language for summary output: "en" | "ar".  Default: "en".
     language: Optional[str] = "en"

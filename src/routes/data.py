@@ -57,7 +57,7 @@ data_router = APIRouter(prefix="/v1/data")
 @data_router.post("/upload/{project_id}")
 async def upload_data(
     request: Request,
-    project_id: int,
+    project_id: str,
     file: UploadFile,
     app_settings: Settings = Depends(get_settings),
 ):
@@ -119,7 +119,7 @@ async def upload_data(
 # ---------------------------------------------------------------------------
 
 async def _run_process_and_index(
-    project_id: int,
+    project_id: str,
     process_request: ProcessRequest,
     db_client,
     vectordb_client,
@@ -285,6 +285,17 @@ async def _run_process_and_index(
             no_records += inserted
             no_files += 1
 
+        if no_files == 0:
+            await processing_status_store.set_status(
+                pid,
+                ProcessingStatus.FAILED,
+                detail="No files could be extracted or indexed.",
+                files_done=0,
+                files_total=total_files,
+                chunks_indexed=0,
+            )
+            return
+
         # ── READY ────────────────────────────────────────────────────────
         await processing_status_store.set_status(
             pid, ProcessingStatus.READY,
@@ -308,7 +319,7 @@ async def _run_process_and_index(
 @data_router.post("/process/{project_id}")
 async def process_endpoint(
     request: Request,
-    project_id: int,
+    project_id: str,
     process_request: ProcessRequest,
     background_tasks: BackgroundTasks,
 ):
@@ -341,7 +352,7 @@ async def process_endpoint(
             "signal": "processing_started",
             "status": ProcessingStatus.PROCESSING.value,
             "project_id": project_id,
-            "message": "Processing started in background. Poll /v1/data/status/{project_id} for updates.",
+            "message": f"Processing started in background. Poll /v1/data/status/{project_id} for updates.",
         },
     )
 
@@ -351,7 +362,7 @@ async def process_endpoint(
 # ---------------------------------------------------------------------------
 
 @data_router.get("/status/{project_id}")
-async def get_processing_status(project_id: int):
+async def get_processing_status(project_id: str):
     """
     Return the current processing status for *project_id*.
 
@@ -384,7 +395,7 @@ async def get_processing_status(project_id: int):
 # ---------------------------------------------------------------------------
 
 @data_router.get("/assets/{project_id}")
-async def get_project_assets(request: Request, project_id: int):
+async def get_project_assets(request: Request, project_id: str):
     """
     Return the list of uploaded assets (lecture files) for *project_id*.
     Used by the Streamlit frontend to populate the lecture selector and

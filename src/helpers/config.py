@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     APP_NAME: str
     APP_ENV: str
 
-    FILE_ALLOWED_TYPES: str
+    FILE_ALLOWED_TYPES: List[str]
     FILE_MAX_SIZE: int
     FILE_DEFAULT_CHUNK: int
 

@@ -1,6 +1,10 @@
 from fastapi import FastAPI, APIRouter, status, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
-from routes.schemes.nlp import PushRequest, SearchRequest, VisualizeRequest, AgentQueryRequest, AgentQueryResponse, MultimodalQueryResponse
+from routes.schemes.nlp import (
+    PushRequest, SearchRequest, VisualizeRequest,
+    AgentQueryRequest, AgentQueryResponse, MultimodalQueryResponse,
+    SummaryRequest,
+)
 from agents.base import create_initial_state
 from helpers.config import get_settings
 import json
@@ -26,7 +30,7 @@ nlp_router = APIRouter(
 )
 
 @nlp_router.post("/index/push/{project_id}")
-async def index_project(request: Request, project_id: int, push_request: PushRequest):
+async def index_project(request: Request, project_id: str, push_request: PushRequest):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.db_client
@@ -112,7 +116,7 @@ async def index_project(request: Request, project_id: int, push_request: PushReq
     )
 
 @nlp_router.get("/index/info/{project_id}")
-async def get_project_index_info(request: Request, project_id: int):
+async def get_project_index_info(request: Request, project_id: str):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.db_client
@@ -139,7 +143,7 @@ async def get_project_index_info(request: Request, project_id: int):
     )
 
 @nlp_router.post("/index/search/{project_id}")
-async def search_index(request: Request, project_id: int, search_request: SearchRequest):
+async def search_index(request: Request, project_id: str, search_request: SearchRequest):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.db_client
@@ -176,7 +180,7 @@ async def search_index(request: Request, project_id: int, search_request: Search
     )
 
 @nlp_router.post("/index/answer/{project_id}")
-async def answer_rag(request: Request, project_id: int, search_request: SearchRequest):
+async def answer_rag(request: Request, project_id: str, search_request: SearchRequest):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.db_client
@@ -322,7 +326,7 @@ async def generate_visualization(request: VisualizeRequest):
 
 
 @nlp_router.post("/quiz/{project_id}")
-async def get_quiz(request: Request, project_id: int):
+async def get_quiz(request: Request, project_id: str):
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
 
@@ -341,9 +345,25 @@ async def get_quiz(request: Request, project_id: int):
     return JSONResponse(content={"signal": "quiz_success", "quiz": quiz})
 
 @nlp_router.post("/summarize/{project_id}")
-async def get_summary(request: Request, project_id: int):
+async def get_summary(request: Request, project_id: str, summary_request: SummaryRequest = None):
+    """
+    Generate a full structured lecture summary using map-reduce.
+
+    Phase 6: now accepts an optional ``SummaryRequest`` body with
+    ``asset_ids`` (limit to specific files) and ``language`` ("en"/"ar").
+
+    Streams the summary token-by-token as ``text/event-stream`` using
+    ``NLPController.generate_summary_stream`` with the new
+    ``chunk_model`` parameter that triggers the map-reduce
+    ``SummaryGenerator`` path over all ordered chunks.
+    """
+    if summary_request is None:
+        summary_request = SummaryRequest()
+
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
+
+    chunk_model = await ChunkModel.create_instance(db_client=request.app.db_client)
 
     nlp_controller = NLPController(
         vectordb_client=request.app.vectordb_client,
@@ -352,17 +372,19 @@ async def get_summary(request: Request, project_id: int):
         template_parser=request.app.template_parser,
     )
 
-    # Streaming — prevents read timeout on large/OCR-scanned lectures.
-    # The client receives text chunks word-by-word instead of waiting for the
-    # full response, exactly like answer_stream does for chat.
     return StreamingResponse(
-        nlp_controller.generate_summary_stream(project=project, limit=15),
+        nlp_controller.generate_summary_stream(
+            project=project,
+            chunk_model=chunk_model,
+            asset_ids=summary_request.asset_ids or [],
+            language=summary_request.language or "en",
+        ),
         media_type="text/event-stream",
     )
 
 
 @nlp_router.post("/index/answer_stream/{project_id}")
-async def answer_rag_stream(request: Request, project_id: int, search_request: SearchRequest):
+async def answer_rag_stream(request: Request, project_id: str, search_request: SearchRequest):
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
 
@@ -381,20 +403,24 @@ async def answer_rag_stream(request: Request, project_id: int, search_request: S
 @nlp_router.post("/agent-query", response_model=AgentQueryResponse)
 async def agent_query(request: Request, query_request: AgentQueryRequest):
     """
-    Process a multi-agent RAG query.
+    Process a multi-agent RAG query (non-streaming).
+
+    Phase 6: ``teaching_mode`` from the request is passed into the initial
+    state so agents can adapt depth/style. ``citations`` are returned in the
+    response when available (item 8).
     """
     try:
         initial_state = create_initial_state(
             query=query_request.query,
             project_id=query_request.project_id,
             asset_ids=query_request.asset_ids,
-            image_paths=query_request.image_paths
+            image_paths=query_request.image_paths,
+            teaching_mode=query_request.teaching_mode or "",
         )
         initial_state["metadata"]["session_id"] = query_request.session_id
 
         result = await request.app.agent_graph.run(initial_state)
 
-        # Save interaction via memory agent
         try:
             memory_agent = request.app.agent_graph._memory
             await memory_agent.save_interaction(result)
@@ -404,14 +430,16 @@ async def agent_query(request: Request, query_request: AgentQueryRequest):
         settings = get_settings()
 
         response_kwargs = {
-            "response": result.get("final_response", ""),
-            "session_id": query_request.session_id
+            "response":       result.get("final_response", ""),
+            "session_id":     query_request.session_id,
+            "teaching_mode":  result.get("teaching_mode", query_request.teaching_mode or ""),
+            "citations":      result.get("citations", []),
         }
 
         if settings.DEBUG_MODE:
-            response_kwargs["agent_trace"] = result.get("agent_trace", [])
+            response_kwargs["agent_trace"]      = result.get("agent_trace", [])
             response_kwargs["retrieved_chunks"] = result.get("retrieved_chunks", [])
-            response_kwargs["metadata"] = result.get("metadata", {})
+            response_kwargs["metadata"]         = result.get("metadata", {})
 
         return AgentQueryResponse(**response_kwargs)
     except Exception as e:
@@ -421,28 +449,17 @@ async def agent_query(request: Request, query_request: AgentQueryRequest):
 @nlp_router.post("/agent-query/stream")
 async def agent_query_stream(request: Request, query_request: AgentQueryRequest):
     """
-    Process a multi-agent RAG query and stream the LLM answer as Server-Sent Events.
+    Process a multi-agent RAG query and stream the LLM answer as SSE.
 
-    The pipeline runs all agents up to and including ``ReasoningAgent`` to
-    build the full context, then uses ``ResponseAgent.stream_execute`` to
-    stream LLM answer tokens in real-time.  Each token is emitted as an
-    SSE ``data:`` line.  A final ``data: [DONE]`` sentinel closes the stream.
-
-    Request body
-    ------------
-    Same as ``POST /agent-query``.
-
-    Returns
-    -------
-    StreamingResponse
-        ``text/event-stream`` with one ``data: <token>`` line per LLM token.
+    Phase 6: ``teaching_mode`` is passed through to the initial state.
     """
     try:
         initial_state = create_initial_state(
             query=query_request.query,
             project_id=query_request.project_id,
             asset_ids=query_request.asset_ids,
-            image_paths=query_request.image_paths
+            image_paths=query_request.image_paths,
+            teaching_mode=query_request.teaching_mode or "",
         )
         initial_state["metadata"]["session_id"] = query_request.session_id
     except Exception as e:
@@ -450,22 +467,13 @@ async def agent_query_stream(request: Request, query_request: AgentQueryRequest)
 
     async def token_stream_generator():
         try:
-            # Step 1: Run the full pipeline
-            # The pipeline now ends at ResponseFormatterAgent, which sets final_response.
-            # But wait, we want to stream the final_response!
-            # ResponseFormatterAgent has stream_execute. We run up to the node before it,
-            # or just run the whole pipeline without the final node if possible.
-            # However, for simplicity, we will update the stream endpoint to just call
-            # the formatter's stream_execute.
             pipeline_state = await request.app.agent_graph.run_up_to_formatter(initial_state)
 
-            # Step 2: Stream LLM tokens via ResponseFormatterAgent
             response_formatter = request.app.agent_graph._response_formatter
             async for token in response_formatter.stream_execute(pipeline_state):
                 if token:
                     yield f"data: {token}\n\n"
 
-            # Step 3: Save interaction in memory
             try:
                 memory_agent = request.app.agent_graph._memory
                 await memory_agent.save_interaction(pipeline_state)
@@ -489,13 +497,19 @@ async def multimodal_query(
     query: str = Form(...),
     project_id: str = Form(...),
     session_id: str = Form(default="default"),
+    teaching_mode: str = Form(default=""),
+    asset_ids: str = Form(default=""),
     files: list[UploadFile] = File(default=[])
 ):
+    """
+    Phase 6: added ``teaching_mode`` and ``asset_ids`` form fields.
+    ``asset_ids`` is a comma-separated string of asset IDs (e.g. "1,2,3").
+    ``citations`` are included in the response when indexed chunks were used.
+    """
     tmp_dir = tempfile.mkdtemp()
     try:
         saved_paths = []
         for f in files:
-            # Check if file has an empty filename (happens when no files uploaded but form field present)
             if not f.filename:
                 continue
             dest = os.path.join(tmp_dir, f.filename)
@@ -503,35 +517,35 @@ async def multimodal_query(
                 out.write(await f.read())
             saved_paths.append(dest)
 
+        # Parse comma-separated asset_ids string into a list
+        parsed_asset_ids = [a.strip() for a in asset_ids.split(",") if a.strip()] if asset_ids else []
+
         multi_processor = MultiFileProcessor()
         file_state = await multi_processor.process_files(saved_paths)
 
         initial_state = create_initial_state(
             query=query,
             project_id=project_id,
-            asset_ids=[],
+            asset_ids=parsed_asset_ids,
             image_paths=file_state.get("image_paths", []),
             uploaded_files=file_state.get("uploaded_files", []),
+            teaching_mode=teaching_mode or "",
         )
 
-        # Merge remaining file_state fields into initial_state
         initial_state.update({k: v for k, v in file_state.items()
                                if k not in ("image_paths", "uploaded_files")})
         initial_state["metadata"]["session_id"] = session_id
 
         result = await request.app.agent_graph.run_multimodal(initial_state)
 
-        # Get memory agent safely to save interaction
         try:
-            # Just extract response and query, mock save or rely on ReasoningAgent
-            memory_agent = request.app.agent_graph._memory  # Accessing private memory agent for simplicity
+            memory_agent = request.app.agent_graph._memory
             await memory_agent.save_interaction(result)
         except Exception as e:
             logger.error(f"Failed to save multimodal memory: {e}")
 
-        # Hide internal states if debug disabled
         DEBUG_MODE = get_settings().DEBUG_MODE
-        final_trace = result.get("agent_trace", []) if DEBUG_MODE else []
+        final_trace  = result.get("agent_trace", []) if DEBUG_MODE else []
         final_chunks = result.get("retrieved_chunks", []) if DEBUG_MODE else []
 
         return MultimodalQueryResponse(
@@ -541,6 +555,8 @@ async def multimodal_query(
             sources_used=result.get("sources_used", []),
             fusion_strategy=result.get("fusion_strategy", "text_only"),
             session_id=session_id,
+            citations=result.get("citations", []),
+            teaching_mode=result.get("teaching_mode", teaching_mode or ""),
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -552,9 +568,15 @@ async def multimodal_query_stream(
     query: str = Form(...),
     project_id: str = Form(...),
     session_id: str = Form(default="default"),
-    visualize: bool = Form(default=False), # <-- تم إضافة متغير الرسم هنا
+    teaching_mode: str = Form(default=""),
+    asset_ids: str = Form(default=""),
+    visualize: bool = Form(default=False),
     files: list[UploadFile] = File(default=[])
 ):
+    """
+    Phase 6: added ``teaching_mode`` and ``asset_ids`` form fields.
+    ``asset_ids`` is a comma-separated string of asset IDs.
+    """
     tmp_dir = tempfile.mkdtemp()
 
     saved_paths = []
@@ -566,20 +588,24 @@ async def multimodal_query_stream(
             out.write(await f.read())
         saved_paths.append(dest)
 
+    # Parse comma-separated asset_ids string into a list
+    parsed_asset_ids = [a.strip() for a in asset_ids.split(",") if a.strip()] if asset_ids else []
+
     multi_processor = MultiFileProcessor()
     file_state = await multi_processor.process_files(saved_paths)
 
     initial_state = create_initial_state(
         query=query,
         project_id=project_id,
-        asset_ids=[],
+        asset_ids=parsed_asset_ids,
         image_paths=file_state.get("image_paths", []),
         uploaded_files=file_state.get("uploaded_files", []),
+        teaching_mode=teaching_mode or "",
     )
     initial_state.update({k: v for k, v in file_state.items()
                            if k not in ("image_paths", "uploaded_files")})
     initial_state["metadata"]["session_id"] = session_id
-    initial_state["metadata"]["visualize"] = visualize # حفظ اختيار المستخدم
+    initial_state["metadata"]["visualize"] = visualize
 
     async def event_generator():
         try:
@@ -591,7 +617,6 @@ async def multimodal_query_stream(
                 full_text += token.replace("\\n", "\n")
                 yield f"data: {token}\n\n"
 
-            # 🔥 الجزء الجديد الخاص بتوليد الرسمة بعد انتهاء الكتابة
             if state.get("metadata", {}).get("visualize"):
                 yield f"data: \\n\\n⏳ *جاري إنشاء رسوم توضيحية للملخص (Napkin AI)...*\\n\\n"
 
@@ -603,7 +628,6 @@ async def multimodal_query_stream(
                 vis_urls = state.get("visualization_urls", [])
                 if vis_urls:
                     yield f"data: \\n\\n### 🎨 رسوم ومخططات توضيحية:\\n\\n"
-                    # عرض كل الصور تحت بعضها
                     for idx, v_url in enumerate(vis_urls):
                         md_img = f"![Visualization {idx+1}]({v_url})\\n\\n"
                         yield f"data: {md_img}\n\n"

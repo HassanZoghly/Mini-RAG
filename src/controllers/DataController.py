@@ -4,19 +4,41 @@ from .ProjectController import ProjectController
 from models import ResponseSignal
 import re
 import os
+import json
 
 class DataController(BaseController):
+
+    ALLOWED_EXTENSIONS = {
+        ".pdf",
+        ".txt", ".md", ".csv", ".json", ".html", ".xml", ".yaml", ".yml",
+        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".gif",
+    }
 
     def __init__(self):
         super().__init__()
         self.size_scale = 1048576 # Convert MB to bytes
 
     def validate_uploaded_file(self, file: UploadFile):
+        allowed_types = self.app_settings.FILE_ALLOWED_TYPES
+        if isinstance(allowed_types, str):
+            try:
+                allowed_types = json.loads(allowed_types)
+            except json.JSONDecodeError:
+                allowed_types = [
+                    item.strip()
+                    for item in allowed_types.split(",")
+                    if item.strip()
+                ]
 
-        if file.content_type not in self.app_settings.FILE_ALLOWED_TYPES:
+        file_ext = os.path.splitext(file.filename or "")[-1].lower()
+        content_type = file.content_type or ""
+
+        if content_type not in allowed_types and file_ext not in self.ALLOWED_EXTENSIONS:
             return False, ResponseSignal.FILE_TYPE_NOT_SUPPORTED
-        if file.size > self.app_settings.FILE_MAX_SIZE * self.size_scale:
+
+        if file.size is not None and file.size > self.app_settings.FILE_MAX_SIZE * self.size_scale:
             return False, ResponseSignal.FILE_SIZE_EXCEEDED
+
         return True, ResponseSignal.FILE_UPLOAD_SUCCESS
 
     def generate_unique_filepath(self, orig_file_name: str, project_id: str):
@@ -40,7 +62,9 @@ class DataController(BaseController):
 
 
     def get_clean_filename(self, orig_file_name: str):
-        Cleaned_filename = re.sub(r'[^\w.]', '', orig_file_name.strip())
+        Cleaned_filename = re.sub(r'[^\w.]', '', (orig_file_name or "").strip())
         Cleaned_filename = Cleaned_filename.replace(" ", "_")
+        if not Cleaned_filename:
+            Cleaned_filename = "upload"
 
         return Cleaned_filename

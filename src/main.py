@@ -1,5 +1,8 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 from routes import base, data, nlp
+from routes.quiz import quiz_router
+from routes.diagram import diagram_router
 from helpers.config import get_settings
 from stores.llm.LLMProviderFactory import LLMProviderFactory
 from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
@@ -11,12 +14,10 @@ from agents.graph.GraphFactory import GraphFactory
 # Import metrics setup
 from utils.metrics import setup_metrics
 
-app = FastAPI()
 
-# Setup Prometheus metrics
-setup_metrics(app)
-
-async def startup_span():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ── Startup ────────────────────────────────────────────────────────
     settings = get_settings()
 
     postgres_conn = f"postgresql+asyncpg://{settings.POSTGRES_USERNAME}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_MAIN_DATABASE}"
@@ -55,15 +56,20 @@ async def startup_span():
 
     app.agent_graph = GraphFactory.create(app)
 
+    yield
 
-
-async def shutdown_span():
-    app.db_engine.dispose()
+    # ── Shutdown ───────────────────────────────────────────────────────
+    await app.db_engine.dispose()
     await app.vectordb_client.disconnect()
 
-app.on_event("startup")(startup_span)
-app.on_event("shutdown")(shutdown_span)
+
+app = FastAPI(lifespan=lifespan)
+
+# Setup Prometheus metrics
+setup_metrics(app)
 
 app.include_router(base.base_router)
 app.include_router(data.data_router)
 app.include_router(nlp.nlp_router)
+app.include_router(quiz_router)
+app.include_router(diagram_router)
