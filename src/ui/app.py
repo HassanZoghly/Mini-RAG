@@ -1,7 +1,9 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import uuid
 import os
+import html as html_lib
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 
@@ -18,6 +20,22 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "active_view" not in st.session_state:
+    st.session_state.active_view = "chat"
+if "quiz_data" not in st.session_state:
+    st.session_state.quiz_data = None
+if "quiz_current" not in st.session_state:
+    st.session_state.quiz_current = 0
+if "quiz_score" not in st.session_state:
+    st.session_state.quiz_score = 0
+if "quiz_answered" not in st.session_state:
+    st.session_state.quiz_answered = False
+if "quiz_last_correct" not in st.session_state:
+    st.session_state.quiz_last_correct = None
+if "quiz_completed" not in st.session_state:
+    st.session_state.quiz_completed = []
+if "diagram_data" not in st.session_state:
+    st.session_state.diagram_data = None
 
 # ── sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -28,6 +46,9 @@ with st.sidebar:
     if st.button("New Session", use_container_width=True):
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.chat_history = []
+        st.session_state.active_view = "chat"
+        st.session_state.quiz_data = None
+        st.session_state.diagram_data = None
         st.rerun()
 
     st.caption(f"Session `{st.session_state.session_id[:8]}...`")
@@ -135,10 +156,16 @@ with st.sidebar:
 
     st.divider()
 
-    # 4. قسم الاختبار (مع تحديد عدد الأسئلة)
-    st.subheader("🧠 الاختبار (Quiz)")
-    num_questions = st.number_input("🔢 عدد الأسئلة:", min_value=1, max_value=50, value=5, step=1)
-    quiz_btn = st.button("توليد أسئلة", use_container_width=True)
+    # 4. المخطط التفاعلي للمحاضرة
+    st.subheader("🧩 Lecture Diagram")
+    diagram_btn = st.button("Generate Diagram", use_container_width=True)
+
+    st.divider()
+
+    # 5. الاختبار التفاعلي
+    st.subheader("🧠 Interactive Quiz")
+    num_questions = st.number_input("🔢 عدد الأسئلة:", min_value=1, max_value=20, value=5, step=1)
+    quiz_btn = st.button("Interactive Quiz", use_container_width=True)
 
 # 💡 الفلترة الذكية (تجهيز الملفات للباك-إند)
 if selected_file == "جميع المحاضرات":
@@ -208,6 +235,197 @@ def fetch_trace_and_sources(query: str, files) -> tuple[list, list]:
         pass
     return [], []
 
+
+def generate_interactive_quiz(files, num_questions: int, language: str):
+    resp = requests.post(
+        f"{API_URL}/v1/nlp/quiz/generate/{PROJECT_ID}",
+        data={"num_questions": str(num_questions), "language": language},
+        files=build_files_payload(files) or None,
+        timeout=180,
+    )
+    if not resp.ok:
+        raise RuntimeError(resp.text[:500])
+    return resp.json()
+
+
+def generate_lecture_diagram(files, language: str):
+    resp = requests.post(
+        f"{API_URL}/v1/nlp/diagram/generate/{PROJECT_ID}",
+        data={"language": language, "diagram_type": "flowchart"},
+        files=build_files_payload(files) or None,
+        timeout=180,
+    )
+    if not resp.ok:
+        raise RuntimeError(resp.text[:500])
+    return resp.json()
+
+
+def _normalize_answer(value: str) -> str:
+    return " ".join((value or "").strip().lower().split())
+
+
+def _correct_answer_text(question: dict) -> str:
+    correct = str(question.get("correct_answer", "")).strip()
+    options = question.get("options", []) or []
+    letter_map = {"A": 0, "B": 1, "C": 2, "D": 3, "أ": 0, "ب": 1, "ج": 2, "د": 3}
+    if correct.upper() in letter_map and letter_map[correct.upper()] < len(options):
+        return options[letter_map[correct.upper()]]
+    if correct in letter_map and letter_map[correct] < len(options):
+        return options[letter_map[correct]]
+    return correct
+
+
+def render_mermaid_diagram(mermaid_code: str, height: int = 620):
+    safe_code = html_lib.escape(mermaid_code or "")
+    html = f"""
+    <div style="font-family: system-ui, -apple-system, Segoe UI, sans-serif;">
+      <pre class="mermaid" style="background: white; padding: 16px; border-radius: 12px;">
+{safe_code}
+      </pre>
+    </div>
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({{ startOnLoad: true, theme: 'default', securityLevel: 'loose' }});
+    </script>
+    """
+    components.html(html, height=height, scrolling=True)
+
+
+def reset_quiz_runtime():
+    st.session_state.quiz_current = 0
+    st.session_state.quiz_score = 0
+    st.session_state.quiz_answered = False
+    st.session_state.quiz_last_correct = None
+    st.session_state.quiz_completed = []
+
+
+def render_interactive_quiz_view():
+    quiz = st.session_state.quiz_data or {}
+    questions = quiz.get("questions", [])
+
+    st.title("🧠 Interactive Quiz")
+
+    if not questions:
+        st.info("No quiz has been generated yet.")
+        if st.button("Back to Chat"):
+            st.session_state.active_view = "chat"
+            st.rerun()
+        return
+
+    total = len(questions)
+    idx = min(st.session_state.quiz_current, total)
+
+    if idx >= total:
+        st.success("🎉 Quiz completed!")
+        st.metric("Final Score", f"{st.session_state.quiz_score} / {total}")
+        percent = int((st.session_state.quiz_score / total) * 100) if total else 0
+        st.progress(percent / 100)
+        st.write(f"**Result:** {percent}%")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Retake Quiz", use_container_width=True):
+                reset_quiz_runtime()
+                st.rerun()
+        with col2:
+            if st.button("Back to Chat", use_container_width=True):
+                st.session_state.active_view = "chat"
+                st.rerun()
+        return
+
+    question = questions[idx]
+    st.caption(f"Question {idx + 1} of {total}")
+    st.progress(idx / total)
+    st.metric("Score", f"{st.session_state.quiz_score} / {total}")
+
+    st.subheader(question.get("question", ""))
+    options = question.get("options", [])
+    labels = ["A", "B", "C", "D"]
+    display_options = [f"{labels[i]}. {opt}" for i, opt in enumerate(options)]
+    option_lookup = {display_options[i]: options[i] for i in range(len(options))}
+
+    selected_display = st.radio(
+        "Choose one answer:",
+        display_options,
+        key=f"quiz_choice_{quiz.get('quiz_id', 'quiz')}_{idx}",
+        disabled=st.session_state.quiz_answered,
+    )
+    selected_answer = option_lookup.get(selected_display, selected_display)
+    correct_answer = _correct_answer_text(question)
+
+    if not st.session_state.quiz_answered:
+        if st.button("Submit Answer", type="primary", use_container_width=True):
+            is_correct = _normalize_answer(selected_answer) == _normalize_answer(correct_answer)
+            st.session_state.quiz_answered = True
+            st.session_state.quiz_last_correct = is_correct
+            if is_correct and idx not in st.session_state.quiz_completed:
+                st.session_state.quiz_score += 1
+                st.session_state.quiz_completed.append(idx)
+            st.rerun()
+    else:
+        if st.session_state.quiz_last_correct:
+            st.success("✅ Correct!")
+            st.write(question.get("explanation", ""))
+        else:
+            st.error("❌ Wrong answer.")
+            st.info(f"Hint: {question.get('hint', 'Review the related lecture concept.')}")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if not st.session_state.quiz_last_correct and st.button("Retry", use_container_width=True):
+                st.session_state.quiz_answered = False
+                st.session_state.quiz_last_correct = None
+                st.rerun()
+        with col2:
+            next_label = "Finish Quiz" if idx == total - 1 else "Next Question"
+            if st.button(next_label, use_container_width=True):
+                st.session_state.quiz_current += 1
+                st.session_state.quiz_answered = False
+                st.session_state.quiz_last_correct = None
+                st.rerun()
+
+        with st.expander("Show explanation and correct answer", expanded=bool(st.session_state.quiz_last_correct)):
+            st.write(f"**Correct answer:** {correct_answer}")
+            st.write(question.get("explanation", ""))
+
+    st.divider()
+    if st.button("Exit Quiz and return to Chat"):
+        st.session_state.active_view = "chat"
+        st.rerun()
+
+
+def render_diagram_view():
+    diagram = st.session_state.diagram_data or {}
+    st.title("🧩 Lecture Diagram")
+
+    if not diagram:
+        st.info("No diagram has been generated yet.")
+        if st.button("Back to Chat"):
+            st.session_state.active_view = "chat"
+            st.rerun()
+        return
+
+    st.subheader(diagram.get("title", "Lecture Diagram"))
+    mermaid_code = diagram.get("content", "")
+    render_mermaid_diagram(mermaid_code)
+
+    with st.expander("Mermaid source", expanded=False):
+        st.code(mermaid_code, language="mermaid")
+
+    if st.button("Back to Chat"):
+        st.session_state.active_view = "chat"
+        st.rerun()
+
+# ── dedicated tool views ───────────────────────────────────────────────────────
+# When a tool is active, render it as its own page/view instead of mixing it into chat.
+if st.session_state.active_view == "quiz":
+    render_interactive_quiz_view()
+    st.stop()
+
+if st.session_state.active_view == "diagram":
+    render_diagram_view()
+    st.stop()
+
 # ── chat history display ───────────────────────────────────────────────────────
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
@@ -239,20 +457,29 @@ if sum_btn:
         st.session_state.chat_history.append({"role": "assistant", "content": f"**Summary**\n\n{answer}"})
         st.rerun()
 
+if diagram_btn:
+    if selected_file == "جميع المحاضرات" and uploaded_files and len(uploaded_files) > 1:
+        st.error("⚠️ يرجى تحديد محاضرة واحدة فقط من القائمة المنسدلة (المحاضرة المستهدفة) لإنشاء الرسم التوضيحي. دمج عدة محاضرات يسبب خطأ في حجم البيانات.")
+    else:
+        with st.spinner("Generating lecture diagram... ⏳"):
+            try:
+                st.session_state.diagram_data = generate_lecture_diagram(target_files, tool_lang)
+                st.session_state.active_view = "diagram"
+                st.toast("✅ Diagram generated!", icon="✅")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Diagram generation failed: {e}")
+
 if quiz_btn:
-    # تضمين عدد الأسئلة بين قوسين ليتمكن الباك-إند من قراءته
-    QUIZ_QUERY = f"Generate quiz [{num_questions}] for {target_instruction} {lang_instruction}"
-    display_text = f"Quiz ({num_questions} questions) on {selected_file} ({tool_lang})"
-    st.session_state.chat_history.append({"role": "user", "content": display_text})
-    with st.chat_message("user"):
-        st.markdown(display_text)
-    with st.chat_message("assistant"):
-        with st.spinner("جاري إعداد الأسئلة... ⏳"):
-            answer = stream_query(QUIZ_QUERY, target_files)
-    st.toast("✅ اكتملت الأسئلة!", icon="✅")
-    if answer:
-        st.session_state.chat_history.append({"role": "assistant", "content": f"**Quiz**\n\n{answer}"})
-        st.rerun()
+    with st.spinner("Generating interactive quiz... ⏳"):
+        try:
+            st.session_state.quiz_data = generate_interactive_quiz(target_files, num_questions, tool_lang)
+            reset_quiz_runtime()
+            st.session_state.active_view = "quiz"
+            st.toast("✅ Interactive quiz ready!", icon="✅")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Quiz generation failed: {e}")
 
 # ── chat input ─────────────────────────────────────────────────────────────────
 user_input = st.chat_input("Ask anything about your documents...")

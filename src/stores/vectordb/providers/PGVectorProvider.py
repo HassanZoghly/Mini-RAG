@@ -271,7 +271,7 @@ class PGVectorProvider(VectorDBInterface):
 
         is_collection_existed = await self.is_collection_existed(collection_name=collection_name)
         if not is_collection_existed:
-            self.logger.error(f"Can not search for records in a non-existed collection: {collection_name}")
+            self.logger.warning(f"Can not search for records in a non-existed collection: {collection_name}")
             return False
 
         vector = "[" + ",".join([ str(v) for v in vector ]) + "]"

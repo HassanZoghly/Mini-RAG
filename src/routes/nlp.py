@@ -1,12 +1,16 @@
 from fastapi import FastAPI, APIRouter, status, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
-from routes.schemes.nlp import PushRequest, SearchRequest, VisualizeRequest, AgentQueryRequest, AgentQueryResponse, MultimodalQueryResponse
+from routes.schemes.nlp import (
+    PushRequest, SearchRequest, VisualizeRequest,
+    QuizAnswerRequest, QuizAnswerResponse, QuizGenerateResponse, DiagramGenerateResponse,
+    AgentQueryRequest, AgentQueryResponse, MultimodalQueryResponse,
+)
 from agents.base import create_initial_state
 from helpers.config import get_settings
 import json
 from models.ProjectModel import ProjectModel
 from models.ChunkModel import ChunkModel
-from controllers import NLPController
+from controllers import NLPController, ProcessController
 from models import ResponseSignal
 from tqdm.auto import tqdm
 import os
@@ -16,10 +20,168 @@ import asyncio
 import shutil
 import tempfile
 from agents.multimodal.MultiFileProcessor import MultiFileProcessor
+from agents.quiz.QuizAgent import QuizAgent
+from agents.diagram.DiagramAgent import DiagramAgent
+from stores.llm.LLMEnums import DocumentTypeEnum
 
 import logging
 
 logger = logging.getLogger("uvicorn.error")
+
+
+def _normalize_answer_text(value: str) -> str:
+    return " ".join((value or "").strip().lower().split())
+
+
+async def _read_generation_payload(request: Request):
+    """Read JSON, form-url-encoded, or multipart payloads for tool endpoints.
+
+    The new quiz/diagram endpoints must support both:
+    - Streamlit multipart requests with uploaded files
+    - JSON/form requests that rely on already indexed project chunks
+    """
+    content_type = request.headers.get("content-type", "").lower()
+    data = {}
+    files = []
+
+    if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        for key, value in form.multi_items():
+            if hasattr(value, "filename") and hasattr(value, "read"):
+                if getattr(value, "filename", None):
+                    files.append(value)
+            else:
+                data[key] = value
+        return data, files
+
+    if "application/json" in content_type:
+        try:
+            json_data = await request.json()
+            if isinstance(json_data, dict):
+                data.update(json_data)
+        except Exception:
+            pass
+
+    return data, files
+
+
+async def _context_from_uploaded_files(uploaded_files) -> str:
+    """Extract text/OCR context from uploaded files without persisting them."""
+    if not uploaded_files:
+        return ""
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        saved_paths = []
+        for uploaded in uploaded_files:
+            filename = os.path.basename(uploaded.filename or "uploaded_file")
+            dest = os.path.join(tmp_dir, filename)
+            with open(dest, "wb") as out:
+                out.write(await uploaded.read())
+            saved_paths.append(dest)
+
+        process_controller = ProcessController(project_id="")
+        loop = asyncio.get_event_loop()
+        context_parts = []
+
+        for path in saved_paths:
+            result = await loop.run_in_executor(None, process_controller.extract_any_file, path)
+            text = (result or {}).get("text", "").strip()
+            if text:
+                context_parts.append(
+                    f"--- START OF FILE: {(result or {}).get('file_name', os.path.basename(path))} ---\n"
+                    f"{text}\n"
+                    f"--- END OF FILE ---"
+                )
+
+        return "\n\n".join(context_parts).strip()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def _context_from_project_chunks(request: Request, project_id: str, max_chunks: int = 120) -> str:
+    """Load persisted chunks from PostgreSQL when project_id is an integer DB id."""
+    if not str(project_id).isdigit():
+        return ""
+
+    try:
+        project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
+        project = await project_model.get_project_or_create_one(project_id=int(project_id))
+        chunk_model = await ChunkModel.create_instance(db_client=request.app.db_client)
+        chunks = await chunk_model.get_poject_chunks(
+            project_id=project.project_id,
+            page_no=1,
+            page_size=max_chunks,
+        )
+    except Exception as exc:
+        logger.warning(f"Could not load DB chunks for project_id={project_id}: {exc}")
+        return ""
+
+    context_parts = []
+    for idx, chunk in enumerate(chunks or [], start=1):
+        text = (chunk.chunk_text or "").strip()
+        if text:
+            context_parts.append(f"--- CHUNK {idx} ---\n{text}")
+
+    return "\n\n".join(context_parts).strip()
+
+
+async def _context_from_vector_search(request: Request, project_id: str, query_text: str, limit: int = 40) -> str:
+    """Fallback context retrieval from the vector DB collection namespace."""
+    try:
+        nlp_controller = NLPController(
+            vectordb_client=request.app.vectordb_client,
+            generation_client=request.app.generation_client,
+            embedding_client=request.app.embedding_client,
+            template_parser=request.app.template_parser,
+        )
+        raw_vec = request.app.embedding_client.embed_text(
+            text=query_text,
+            document_type=DocumentTypeEnum.QUERY.value,
+        )
+        query_vector = nlp_controller._flatten_vector(raw_vec)
+        if not any(query_vector):
+            return ""
+
+        collection_name = nlp_controller.create_collection_name(project_id=project_id)
+        results = await request.app.vectordb_client.search_by_vector(
+            collection_name=collection_name,
+            vector=query_vector,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning(f"Could not retrieve vector context for project_id={project_id}: {exc}")
+        return ""
+
+    context_parts = []
+    for idx, doc in enumerate(results or [], start=1):
+        text = getattr(doc, "text", "").strip()
+        if text:
+            context_parts.append(f"--- RETRIEVED CHUNK {idx} ---\n{text}")
+
+    return "\n\n".join(context_parts).strip()
+
+
+async def _build_generation_context(request: Request, project_id: str, uploaded_files, task: str) -> str:
+    """Use uploaded files first; otherwise fall back to DB chunks/vector retrieval."""
+    if uploaded_files:
+        return await _context_from_uploaded_files(uploaded_files)
+
+    context = await _context_from_project_chunks(request=request, project_id=project_id)
+    if context:
+        return context
+
+    if task == "diagram":
+        query_text = "lecture overview main topics subtopics relationships concept map summary"
+    else:
+        query_text = "lecture key concepts definitions important details examples assessment questions"
+
+    return await _context_from_vector_search(
+        request=request,
+        project_id=project_id,
+        query_text=query_text,
+    )
+
 
 nlp_router = APIRouter(
     prefix="/v1/nlp"
@@ -320,6 +482,118 @@ async def generate_visualization(request: VisualizeRequest):
             }
         )
 
+
+
+@nlp_router.post("/quiz/generate/{project_id}", response_model=QuizGenerateResponse)
+async def generate_interactive_quiz(request: Request, project_id: str):
+    """Generate a structured, interactive MCQ quiz from uploaded files or indexed chunks."""
+    try:
+        payload, uploaded_files = await _read_generation_payload(request)
+        num_questions = int(payload.get("num_questions", payload.get("count", 5)) or 5)
+        language = payload.get("language", "English")
+
+        context = await _build_generation_context(
+            request=request,
+            project_id=project_id,
+            uploaded_files=uploaded_files,
+            task="quiz",
+        )
+
+        if not context:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "signal": "quiz_context_error",
+                    "error": "No document context found. Upload files or process/index project documents first.",
+                },
+            )
+
+        quiz_agent = QuizAgent(llm_provider=request.app.generation_client)
+        quiz = quiz_agent.generate(
+            context=context,
+            num_questions=num_questions,
+            language=language,
+        )
+
+        return JSONResponse(content=quiz)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"signal": "quiz_validation_error", "error": str(exc)},
+        )
+    except Exception as exc:
+        logger.error(f"Interactive quiz generation error: {exc}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"signal": "quiz_generation_error", "error": str(exc)},
+        )
+
+
+@nlp_router.post("/quiz/answer", response_model=QuizAnswerResponse)
+async def check_quiz_answer(answer_request: QuizAnswerRequest):
+    """Stateless answer checker for non-persisted frontend quizzes."""
+    selected = _normalize_answer_text(answer_request.selected_answer)
+    correct = _normalize_answer_text(answer_request.correct_answer)
+    is_correct = bool(selected and correct and selected == correct)
+
+    if is_correct:
+        message = "Correct answer."
+    else:
+        message = "Wrong answer. Review the hint and try again."
+
+    return QuizAnswerResponse(
+        quiz_id=answer_request.quiz_id,
+        question_index=answer_request.question_index,
+        is_correct=is_correct,
+        message=message,
+        explanation=answer_request.explanation if is_correct else None,
+        hint=None if is_correct else answer_request.hint,
+    )
+
+
+@nlp_router.post("/diagram/generate/{project_id}", response_model=DiagramGenerateResponse)
+async def generate_lecture_diagram(request: Request, project_id: str):
+    """Generate a lecture-wide Mermaid diagram from uploaded files or indexed chunks."""
+    try:
+        payload, uploaded_files = await _read_generation_payload(request)
+        language = payload.get("language", "English")
+        diagram_type = payload.get("diagram_type", "flowchart")
+
+        context = await _build_generation_context(
+            request=request,
+            project_id=project_id,
+            uploaded_files=uploaded_files,
+            task="diagram",
+        )
+
+        if not context:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "signal": "diagram_context_error",
+                    "error": "No document context found. Upload files or process/index project documents first.",
+                },
+            )
+
+        diagram_agent = DiagramAgent(llm_provider=request.app.generation_client)
+        diagram = diagram_agent.generate(
+            context=context,
+            language=language,
+            diagram_type=diagram_type,
+        )
+
+        return JSONResponse(content=diagram)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"signal": "diagram_validation_error", "error": str(exc)},
+        )
+    except Exception as exc:
+        logger.error(f"Lecture diagram generation error: {exc}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"signal": "diagram_generation_error", "error": str(exc)},
+        )
 
 @nlp_router.post("/quiz/{project_id}")
 async def get_quiz(request: Request, project_id: int):
