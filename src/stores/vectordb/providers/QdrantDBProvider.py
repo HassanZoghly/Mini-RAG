@@ -76,7 +76,7 @@ class QdrantDBProvider(VectorDBInterface):
                 collection_name=collection_name,
                 records=[
                     models.Record(
-                        id=[record_id],
+                        id=record_id,   # Bug fix: was id=[record_id] (list), must be scalar
                         vector=vector,
                         payload={
                             "text": text, "metadata": metadata
@@ -136,7 +136,8 @@ class QdrantDBProvider(VectorDBInterface):
         results = self.client.search(
             collection_name=collection_name,
             query_vector=vector,
-            limit=limit
+            limit=limit,
+            with_payload=True,   # Ensure payload (text + metadata) is returned
         )
 
         if not results or len(results) == 0:
@@ -144,8 +145,10 @@ class QdrantDBProvider(VectorDBInterface):
 
         return [
             RetrievedDocument(**{
-                "score": result.score,
-                "text": result.payload["text"],
+                "score":    result.score,
+                "text":     result.payload.get("text", ""),
+                "metadata": result.payload.get("metadata") or {},  # Bug fix: was never populated
+                "id":       str(result.id),
             })
             for result in results
         ]

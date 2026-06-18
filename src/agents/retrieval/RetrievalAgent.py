@@ -123,7 +123,11 @@ class RetrievalAgent(BaseAgent):
             return state
 
         # ── Vector search ────────────────────────────────────────────────
-        MIN_SCORE = 0.05
+        # Keep the threshold very low — cosine scores for valid but
+        # technical queries can be well below 0.05.  top_n already caps
+        # the number of chunks returned; a hard score cut only causes
+        # silent empty-retrieval bugs.
+        MIN_SCORE = 0.0
         try:
             raw_results = await self._vectordb_client.search_by_vector(
                 collection_name=collection_name,
@@ -134,18 +138,22 @@ class RetrievalAgent(BaseAgent):
             self.log_step(f"vector search failed: {exc}")
             raw_results = []
 
+        # search_by_vector returns None when the collection is empty
+        if raw_results is None:
+            raw_results = []
+
         # ── Normalise + asset filter ─────────────────────────────────────
         chunks: List[dict] = []
         asset_ids_str = [str(a) for a in asset_ids] if asset_ids else []
 
-        for doc in (raw_results or []):
+        for doc in raw_results:
             if doc.score < MIN_SCORE:
                 continue
 
             meta = doc.metadata or {}
 
             if asset_ids_str:
-                # Match on either asset_id (int) or source (file_id string)
+                # Match on either asset_id (int PK) or source (file_id string)
                 doc_asset_id = str(meta.get("asset_id", ""))
                 doc_source = str(meta.get("source", ""))
                 if doc_asset_id not in asset_ids_str and doc_source not in asset_ids_str:

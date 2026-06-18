@@ -129,7 +129,8 @@ class NLPController(BaseController):
             vector=query_vector,
             limit=limit
         )
-        return results
+        # search_by_vector returns None when collection is empty — normalise to []
+        return results if results is not None else []
 
     def _rerank_documents(self, query: str, retrieved_documents: list, top_n: int):
         if not retrieved_documents:

@@ -76,6 +76,7 @@ class QuizGenerateRequest(BaseModel):
     num_questions: Optional[int] = 10
     asset_ids:     Optional[List[str]] = Field(default_factory=list)
     language:      Optional[str] = "en"
+    difficulty:    Optional[str] = "MEDIUM"
 
 
 class QuizAnswerRequest(BaseModel):
@@ -124,6 +125,7 @@ async def generate_quiz(
             generation_client=request.app.generation_client,
             language=body.language or "en",
             num_questions=body.num_questions or 10,
+            difficulty=body.difficulty or "MEDIUM",
         )
 
         questions = agent.generate(chunks=chunks)

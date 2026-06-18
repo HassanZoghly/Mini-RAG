@@ -77,10 +77,12 @@ class QuizAgent:
         generation_client,
         language: str = "en",
         num_questions: int = 10,
+        difficulty: str = "MEDIUM",
     ) -> None:
         self._llm          = generation_client
         self._language     = language if language in ("ar", "en") else "en"
         self._num_q        = max(1, min(30, num_questions))
+        self._difficulty   = difficulty.upper() if difficulty.upper() in ("EASY", "MEDIUM", "HARD") else "MEDIUM"
 
     # ------------------------------------------------------------------
     # Public API
@@ -252,19 +254,66 @@ class QuizAgent:
     # ------------------------------------------------------------------
 
     def _system_prompt(self) -> str:
-        if self._language == "ar":
-            return (
-                "أنت مولّد أسئلة اختيار من متعدد متخصص في المحتوى التعليمي. "
-                "مهمتك إنشاء أسئلة اختبار عالية الجودة من المحتوى الدراسي المُقدَّم. "
-                "يجب أن تكون الأسئلة متنوعة وتغطي المفاهيم المختلفة. "
-                "يجب أن تُعيد JSON صرفاً فقط — لا مقدمة ولا شرح خارج JSON."
-            )
-        return (
+        base_en = (
             "You are a multiple-choice quiz generator specialising in educational content. "
             "Your task is to create high-quality exam questions from the provided study material. "
-            "Questions must be varied and cover different concepts and difficulty levels. "
-            "You MUST return ONLY raw JSON — no preamble, no explanation outside the JSON."
+            "You MUST return ONLY raw JSON — no preamble, no explanation outside the JSON.\n\n"
         )
+        base_ar = (
+            "أنت مولّد أسئلة اختيار من متعدد متخصص في المحتوى التعليمي. "
+            "مهمتك إنشاء أسئلة اختبار عالية الجودة من المحتوى الدراسي المُقدَّم. "
+            "يجب أن تُعيد JSON صرفاً فقط — لا مقدمة ولا شرح خارج JSON.\n\n"
+        )
+        
+        diff_en = {
+            "EASY": (
+                "Difficulty Level: EASY\n"
+                "- Questions should be straightforward and direct.\n"
+                "- Focus on definitions and basic understanding.\n"
+                "- Avoid tricky wording.\n"
+                "- Use simple multiple-choice options."
+            ),
+            "MEDIUM": (
+                "Difficulty Level: MEDIUM\n"
+                "- Questions should test understanding and application.\n"
+                "- Include small twists or comparisons.\n"
+                "- Options should be somewhat similar to increase challenge."
+            ),
+            "HARD": (
+                "Difficulty Level: HARD\n"
+                "- Questions should test deep understanding and edge cases.\n"
+                "- Include tricky wording, close answer choices, or multi-step reasoning.\n"
+                "- Focus on differences between similar concepts.\n"
+                "- Include scenario-based or analytical questions."
+            )
+        }
+        
+        diff_ar = {
+            "EASY": (
+                "مستوى الصعوبة: سهل (EASY)\n"
+                "- يجب أن تكون الأسئلة واضحة ومباشرة.\n"
+                "- ركز على التعريفات والفهم الأساسي.\n"
+                "- تجنب الصياغة المخادعة.\n"
+                "- استخدم خيارات إجابة بسيطة."
+            ),
+            "MEDIUM": (
+                "مستوى الصعوبة: متوسط (MEDIUM)\n"
+                "- يجب أن تختبر الأسئلة الفهم والتطبيق.\n"
+                "- قم بتضمين تحولات صغيرة أو مقارنات.\n"
+                "- يجب أن تكون الخيارات متشابهة إلى حد ما لزيادة التحدي."
+            ),
+            "HARD": (
+                "مستوى الصعوبة: صعب (HARD)\n"
+                "- يجب أن تختبر الأسئلة الفهم العميق والحالات الاستثنائية.\n"
+                "- قم بتضمين صياغة مخادعة، خيارات إجابة متقاربة، أو تفكير متعدد الخطوات.\n"
+                "- ركز على الفروق بين المفاهيم المتشابهة.\n"
+                "- قم بتضمين أسئلة مبنية على سيناريوهات أو أسئلة تحليلية."
+            )
+        }
+        
+        if self._language == "ar":
+            return base_ar + diff_ar.get(self._difficulty, diff_ar["MEDIUM"])
+        return base_en + diff_en.get(self._difficulty, diff_en["MEDIUM"])
 
     def _user_prompt(self, content: str) -> str:
         if self._language == "ar":

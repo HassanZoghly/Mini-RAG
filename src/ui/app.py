@@ -239,7 +239,7 @@ def _fetch_citations(query: str, asset_ids: list, teaching_mode: str) -> list:
     return []
 
 
-def _generate_quiz(asset_ids: list, language: str, num_questions: int) -> dict | None:
+def _generate_quiz(asset_ids: list, language: str, num_questions: int, difficulty: str = "MEDIUM") -> dict | None:
     """Call POST /v1/quiz/generate/{PROJECT_ID} and return the parsed JSON."""
     try:
         resp = requests.post(
@@ -248,6 +248,7 @@ def _generate_quiz(asset_ids: list, language: str, num_questions: int) -> dict |
                 "num_questions": num_questions,
                 "asset_ids":     asset_ids,
                 "language":      language,
+                "difficulty":    difficulty,
             },
             timeout=180,
         )
@@ -509,6 +510,12 @@ with st.sidebar:
         "Questions:", min_value=1, max_value=20, value=5, step=1,
         key="iq_num_q",
     )
+    iq_difficulty = st.selectbox(
+        "Difficulty:",
+        ["EASY", "MEDIUM", "HARD"],
+        index=1,
+        key="iq_diff",
+    )
     interactive_quiz_btn = st.button(
         "▶ Start Interactive Quiz",
         use_container_width=True,
@@ -516,7 +523,7 @@ with st.sidebar:
         type="primary",
     )
     if st.session_state.quiz_active:
-        if st.button("✖ Exit Quiz", use_container_width=True):
+        if st.button("✖ Exit Quiz", key="exit_quiz_sidebar_btn", use_container_width=True):
             st.session_state.quiz_active    = False
             st.session_state.quiz_questions = []
             st.session_state.quiz_index     = 0
@@ -741,11 +748,12 @@ if quiz_btn:
 
 # ── Sidebar: Interactive Quiz button trigger ─────────────────────────────────
 if interactive_quiz_btn:
-    with st.spinner(f"Generating {iq_num_questions} quiz questions from lecture… ⏳"):
+    with st.spinner(f"Generating {iq_num_questions} quiz questions from lecture ({iq_difficulty.lower()} difficulty)… ⏳"):
         quiz_data = _generate_quiz(
             asset_ids=selected_asset_ids,
             language=lang_code,
             num_questions=iq_num_questions,
+            difficulty=iq_difficulty,
         )
     if quiz_data and quiz_data.get("questions"):
         st.session_state.quiz_questions = quiz_data["questions"]
@@ -825,7 +833,7 @@ if st.session_state.quiz_active:
                 st.session_state.quiz_answers = {}
                 st.rerun()
         with col2:
-            if st.button("✖ Exit Quiz", use_container_width=True):
+            if st.button("✖ Exit Quiz", key="exit_quiz_results_btn", use_container_width=True):
                 st.session_state.quiz_active    = False
                 st.session_state.quiz_questions = []
                 st.session_state.quiz_index     = 0
@@ -844,6 +852,10 @@ if st.session_state.quiz_active:
         already_answered = qid in st.session_state.quiz_answers
 
         if not already_answered:
+            if q.get("hint"):
+                with st.expander("💡 Show Hint", expanded=False):
+                    st.info(q["hint"])
+
             # Show options as clickable buttons
             option_labels = ["A", "B", "C", "D"]
             for i, opt in enumerate(q["options"][:4]):
@@ -874,8 +886,6 @@ if st.session_state.quiz_active:
                 user_ans = ans_data["user_answer"]
                 st.markdown(f"Your answer: ~~{user_ans}~~")
                 st.markdown(f"✅ Correct answer: **{q['correct_answer']}**")
-                if feedback.get("hint") or q.get("hint"):
-                    st.warning(f"💡 **Hint:** {feedback.get('hint') or q.get('hint', '')}")
                 st.info(f"📖 **Explanation:** {feedback.get('explanation', q.get('explanation', ''))}")
 
             st.markdown("")
