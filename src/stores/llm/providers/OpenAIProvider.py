@@ -97,6 +97,24 @@ class OpenAIProvider(LLMInterface):
 
         return [ rec.embedding for rec in response.data ]
 
+    def set_rerank_model(self, model_id: str):
+        """
+        OpenAI does not provide a native reranker.  This method is a no-op
+        so the provider can be used as the RERANKER_BACKEND without raising
+        AttributeError at startup.  Use CoHereProvider for actual reranking.
+        """
+        self.logger.warning(
+            "OpenAIProvider.set_rerank_model: OpenAI has no native reranker. "
+            "Reranking will be skipped when this provider is the reranker."
+        )
+
+    def rerank(self, query: str, documents: list, top_n: int = 5) -> list:
+        """
+        No-op reranker — returns the first *top_n* documents unchanged.
+        Use CoHereProvider for real semantic reranking.
+        """
+        return documents[:top_n]
+
     def construct_prompt(self, prompt: str, role: str):
         return {
             "role": role,

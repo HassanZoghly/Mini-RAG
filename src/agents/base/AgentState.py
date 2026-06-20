@@ -71,6 +71,15 @@ class AgentState(TypedDict):
     fusion_strategy: str
     sources_used: List[str]
     visualization_urls: List[str]
+    # Teaching mode selected by the student for this query (item 7):
+    # "quick_review" | "full_explanation" | "exam_prep" | "step_by_step" | ""
+    teaching_mode: str
+    # Rewritten, self-contained version of `query` produced by
+    # QueryRewriterAgent (item 4A). Falls back to `query` when empty.
+    query_for_retrieval: str
+    # Source attributions (lecture/page/section) assembled from
+    # `retrieved_chunks` for the final "Sources" section (item 8).
+    citations: List[dict]
 
 
 def create_initial_state(
@@ -79,7 +88,8 @@ def create_initial_state(
     asset_ids: List[str],
     image_paths: List[str],
     uploaded_files: Optional[List[dict]] = None,
-    visualization_urls=[],
+    visualization_urls=None,
+    teaching_mode: str = "",
 ) -> AgentState:
     """
     Factory function that returns a fully-initialised ``AgentState`` with
@@ -104,4 +114,8 @@ def create_initial_state(
         image_base64=[],
         fusion_strategy="text_only",
         sources_used=[],
+        visualization_urls=visualization_urls or [],
+        teaching_mode=teaching_mode or "",
+        query_for_retrieval="",
+        citations=[],
     )

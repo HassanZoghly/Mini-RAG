@@ -54,16 +54,51 @@ class NLPController(BaseController):
 
     async def index_into_vector_db(self, project: Project, chunks: List[DataChunk],
                                    chunks_ids: List[int], do_reset: bool = False):
+        """
+        Embed *chunks* and insert them into the project's vector DB
+        collection in one call (kept for backward compatibility with
+        ``/v1/nlp/index/push``).
 
-        collection_name = self.create_collection_name(project_id=project.project_id)
-        texts = [ c.chunk_text.replace('\x00', '').strip() for c in chunks ]
-        metadata = [ c.chunk_metadata for c in chunks]
+        For the async processing pipeline (``/v1/data/process``), prefer
+        calling ``embed_chunks`` and ``insert_chunks_into_vector_db``
+        separately so the caller can report ``EMBEDDING`` / ``INDEXING``
+        status transitions between the two steps.
+        """
+        vectors = self.embed_chunks(chunks=chunks)
+
+        return await self.insert_chunks_into_vector_db(
+            project=project,
+            chunks=chunks,
+            chunks_ids=chunks_ids,
+            vectors=vectors,
+            do_reset=do_reset,
+        )
+
+    def embed_chunks(self, chunks: List[DataChunk]) -> List[List[float]]:
+        """Compute embedding vectors for *chunks* (the "EMBEDDING" step)."""
+        texts = [c.chunk_text.replace('\x00', '').strip() for c in chunks]
 
         vectors = []
         for text in texts:
             raw_vec = self.embedding_client.embed_text(text=text, document_type=DocumentTypeEnum.DOCUMENT.value)
             flat_vec = self._flatten_vector(raw_vec)
             vectors.append(flat_vec)
+
+        return vectors
+
+    async def insert_chunks_into_vector_db(self, project: Project, chunks: List[DataChunk],
+                                            chunks_ids: List[int], vectors: List[List[float]],
+                                            do_reset: bool = False):
+        """Create (if needed) the project's collection and insert pre-computed
+        *vectors* for *chunks* (the "INDEXING" step)."""
+        collection_name = self.create_collection_name(project_id=project.project_id)
+        texts = [c.chunk_text.replace('\x00', '').strip() for c in chunks]
+        metadata = []
+        for chunk, chunk_id in zip(chunks, chunks_ids):
+            chunk_metadata = dict(chunk.chunk_metadata or {})
+            chunk_metadata["asset_id"] = chunk.chunk_asset_id
+            chunk_metadata["chunk_id"] = chunk_id
+            metadata.append(chunk_metadata)
 
         _ = await self.vectordb_client.create_collection(
             collection_name=collection_name,
@@ -94,7 +129,8 @@ class NLPController(BaseController):
             vector=query_vector,
             limit=limit
         )
-        return results
+        # search_by_vector returns None when collection is empty — normalise to []
+        return results if results is not None else []
 
     def _rerank_documents(self, query: str, retrieved_documents: list, top_n: int):
         if not retrieved_documents:
@@ -174,7 +210,7 @@ class NLPController(BaseController):
         full_prompt = "\n\n".join([documents_prompts, self.template_parser.get("rag", "footer_prompt", {"query": query})])
         chat_history = [self.generation_client.construct_prompt(prompt=system_prompt, role=self.generation_client.enums.SYSTEM.value)]
 
-        for chunk in self.generation_client.generate_stream(prompt=full_prompt, chat_history=chat_history):
+        async for chunk in self.generation_client.generate_stream(prompt=full_prompt, chat_history=chat_history):
             yield chunk
 
     async def generate_quiz(self, project: Project, limit: int = 5):
@@ -215,7 +251,41 @@ class NLPController(BaseController):
         )
         return quiz
 
-    async def generate_summary(self, project: Project, limit: int = 15):
+    async def generate_summary(self, project: Project, limit: int = 15,
+                                chunk_model=None, asset_ids: list = None,
+                                language: str = "en"):
+        """
+        Generate a full structured lecture summary.
+
+        When *chunk_model* is supplied the method uses map-reduce over ALL
+        ordered chunks for the project (items 1 + 4C).  This is the path
+        taken by the agent pipeline and the /v1/nlp/summarize route after
+        Phase 1.
+
+        Falls back to the old similarity-search approach when *chunk_model*
+        is None so that any existing callers that don't pass it keep working.
+        """
+        # ── Full-lecture map-reduce path (preferred) ─────────────────────
+        if chunk_model is not None:
+            from agents.response.SummaryGenerator import SummaryGenerator
+
+            chunks = await chunk_model.get_all_chunks_ordered(
+                project_id=project.project_id,
+                asset_ids=asset_ids or [],
+                max_chunks=2000,
+            )
+
+            if not chunks:
+                return None
+
+            generator = SummaryGenerator(
+                generation_client=self.generation_client,
+                template_parser=self.template_parser,
+                language=language,
+            )
+            return generator.generate(chunks=chunks)
+
+        # ── Legacy similarity-search path (fallback) ─────────────────────
         query_text = "overview, main concepts, summary, introduction, conclusion, important details"
         fetch_limit = limit * 2
         retrieved_documents = await self.search_vector_db_collection(
@@ -253,13 +323,41 @@ class NLPController(BaseController):
         )
         return summary
 
-    async def generate_summary_stream(self, project: Project, limit: int = 15):
+    async def generate_summary_stream(self, project: Project, limit: int = 15,
+                                       chunk_model=None, asset_ids: list = None,
+                                       language: str = "en"):
         """
         Streaming version of generate_summary.
-        Yields text chunks word-by-word so the client never hits a read timeout,
-        even when the source document is entirely OCR-scanned and the LLM response
-        is long (max_output_tokens=4000).
+
+        When *chunk_model* is supplied, uses the map-reduce SummaryGenerator
+        over all ordered chunks and streams the final reduce step.
+        Falls back to the legacy similarity-search single-prompt approach
+        when *chunk_model* is None.
         """
+        # ── Full-lecture map-reduce streaming path (preferred) ────────────
+        if chunk_model is not None:
+            from agents.response.SummaryGenerator import SummaryGenerator
+
+            chunks = await chunk_model.get_all_chunks_ordered(
+                project_id=project.project_id,
+                asset_ids=asset_ids or [],
+                max_chunks=2000,
+            )
+
+            if not chunks:
+                yield "I could not find any indexed content for this project. Please process the lecture first."
+                return
+
+            generator = SummaryGenerator(
+                generation_client=self.generation_client,
+                template_parser=self.template_parser,
+                language=language,
+            )
+            async for token in generator.generate_stream(chunks=chunks):
+                yield token
+            return
+
+        # ── Legacy single-prompt streaming path ───────────────────────────
         query_text = "overview, main concepts, summary, introduction, conclusion, important details"
         fetch_limit = limit * 2
         retrieved_documents = await self.search_vector_db_collection(
@@ -298,8 +396,9 @@ class NLPController(BaseController):
 
         full_prompt = "\n\n".join([documents_prompts, footer_prompt])
 
-        for chunk in self.generation_client.generate_stream(
+        async for chunk in self.generation_client.generate_stream(
             prompt=full_prompt,
             chat_history=chat_history,
+            max_output_tokens=4000,
         ):
             yield chunk
