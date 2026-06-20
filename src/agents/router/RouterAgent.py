@@ -3,129 +3,69 @@ from typing import Dict, Any
 import json
 
 
-# Keywords that suggest the user's query is about content extracted via OCR.
-_OCR_KEYWORDS: frozenset = frozenset({
-    "ocr", "scan", "scanned", "handwritten", "handwriting",
-    "printed text", "image text", "extract text", "read text",
-    "text from image", "document scan",
-})
-
-
 class RouterAgent(BaseAgent):
     """
     Lightweight routing agent that inspects the incoming query and attached
     assets to decide which downstream agents are required.
 
-    The routing decision is made entirely with deterministic heuristics —
-    no LLM call is performed — keeping latency and cost at zero for this
-    step.
+    The routing decision is made entirely via LLM semantic understanding,
+    removing keyword heuristics.
 
-    The agent writes its decisions into ``state["metadata"]`` as boolean
-    flags that downstream agents read:
+    The agent writes its decisions into ``state["metadata"]``:
 
-    * ``needs_vision``  – ``True`` when image paths are present.
-    * ``needs_ocr``     – ``True`` when the query suggests OCR extraction.
-    * ``needs_memory``  – ``True`` when memory/history keywords are found.
-    * ``route``         – ``"retrieval_only"`` for plain text queries with
-                        no special requirements.
-
-    Parameters
-    ----------
-    llm_provider : object
-        Reserved for future use (e.g. LLM-assisted intent classification).
-        Accepted but not used in the current heuristic implementation.
+    * ``route``         – 'smalltalk', 'retrieval', 'direct', 'quiz'
+    * ``mode``          – 'summary', 'explain', 'qa'
+    * ``needs_retrieval`` – True/False
+    * ``needs_vision``  – True when image paths are present.
     """
 
-    def __init__(self, llm_provider) -> None:
+    def __init__(self, llm_provider, template_parser) -> None:
         self._llm_provider = llm_provider
-
-    # ------------------------------------------------------------------
-    # BaseAgent interface
-    # ------------------------------------------------------------------
+        self._template_parser = template_parser
 
     @property
     def agent_name(self) -> str:
-        """Return the display name used in logs and agent trace entries."""
         return "RouterAgent"
 
     async def execute(self, state: AgentState) -> AgentState:
-        """
-        Analyse the query and asset context, then annotate *state* with
-        routing decisions.
-
-        Steps
-        -----
-        1. Validate that ``query`` is present in *state*.
-        2. Call ``_detect_intent`` to determine which capabilities are needed.
-        3. Merge the intent flags into ``state["metadata"]``.
-        4. Set ``state["metadata"]["route"] = "retrieval_only"`` when no
-           special capability is required.
-        5. Append a trace entry describing the routing decision and return
-           the updated state.
-
-        Parameters
-        ----------
-        state : AgentState
-            Current pipeline state.  Must contain at least ``query``.
-
-        Returns
-        -------
-        AgentState
-            Updated state with routing flags written into ``metadata``.
-        """
         self.validate_state(state, ["query"])
 
         query: str = state["query"]
         image_paths = state.get("image_paths") or []
 
+        # 1. اكتشاف اللغة وتوجيه الـ Parser أوتوماتيكياً
+        query_lower = query.lower().strip()
+        is_arabic = any('\u0600' <= char <= '\u06FF' for char in query) or "arabic" in query_lower or "عربي" in query_lower
+        self._template_parser.set_language("ar" if is_arabic else "en")
+
         intent = self._detect_intent(query)
 
-        # image_paths in state override the query-level vision flag
         if image_paths:
             intent["needs_vision"] = True
 
         state["metadata"].update(intent)
 
         route_summary = intent.get("route", "retrieval")
-        confidence = intent.get("confidence", 0.0)
+        mode = intent.get("mode", "qa")
+        needs_retrieval = intent.get("needs_retrieval", True)
 
         state["agent_trace"].append(
-            f"{self.agent_name}: routed query → {route_summary} (confidence: {confidence:.2f})"
+            f"{self.agent_name}: routed query → route: {route_summary}, mode: {mode}, needs_retrieval: {needs_retrieval}"
         )
 
-        self.log_step(f"routing decision: {route_summary} (confidence: {confidence:.2f})")
+        self.log_step(f"routing decision: route={route_summary}, mode={mode}, needs_retrieval={needs_retrieval}")
         return state
-
-    # ------------------------------------------------------------------
-    # Intent detection
-    # ------------------------------------------------------------------
 
     def _detect_intent(self, query: str) -> Dict[str, Any]:
         """
-        Analyse *query* with the LLM to classify educational vs conversational intent,
-        returning a JSON object with confidence scoring.
-
-        Returns
-        -------
-        dict
-            A mapping with boolean capability flags, a 'route' string, and 'confidence'.
+        Analyse *query* with the LLM to classify intent, returning a JSON object.
         """
-        normalised = query.lower().strip()
-        tokens = set(normalised.split())
-
-        needs_ocr = bool(_OCR_KEYWORDS & tokens) or any(
-            phrase in normalised for phrase in _OCR_KEYWORDS if " " in phrase
-        )
-        needs_memory = any(
-            kw in normalised
-            for kw in ("previous", "earlier", "last time", "you said", "remember", "recall", "history", "before", "as i mentioned", "conversation")
-        )
-
-        # 🔥 سحب الـ Prompt النظيف
         system_prompt = self._template_parser.get("rag", "router_system_prompt")
 
-        detected_category = "retrieval"
-        confidence = 0.0
+        # Default fallback values
+        detected_route = "retrieval"
+        detected_mode = "qa"
+        needs_retrieval = True
 
         try:
             llm_response = self._llm_provider.generate_text(
@@ -135,41 +75,43 @@ class RouterAgent(BaseAgent):
                 ]
             )
 
-            # Clean possible markdown wrapping from LLM response
-            clean_json = (llm_response or "").strip()
-            if clean_json.startswith("```json"):
-                clean_json = clean_json[7:]
-            if clean_json.startswith("```"):
-                clean_json = clean_json[3:]
-            if clean_json.endswith("```"):
-                clean_json = clean_json[:-3]
-            clean_json = clean_json.strip()
+            import re
+            json_match = re.search(r'\{.*\}', llm_response or "", re.DOTALL)
+            if json_match:
+                clean_json = json_match.group(0)
+            else:
+                clean_json = (llm_response or "").strip()
 
             parsed = json.loads(clean_json)
-            detected_category = parsed.get("intent", "retrieval").strip().lower()
-            confidence = float(parsed.get("confidence", 0.0))
+            detected_route = parsed.get("route", "retrieval").strip().lower()
+            detected_mode = parsed.get("mode", "qa").strip().lower()
+            
+            nr = parsed.get("needs_retrieval", True)
+            if isinstance(nr, str):
+                needs_retrieval = nr.lower() == "true"
+            else:
+                needs_retrieval = bool(nr)
 
             self.log_step(f"LLM intent output: {parsed}")
         except Exception as exc:
-            self.log_step(f"JSON intent detection failed or parsing error: {exc}. Defaulting to retrieval.")
-            detected_category = "retrieval"
-            confidence = 0.0
+            self.log_step(f"JSON intent detection failed or parsing error: {exc}. Defaulting to retrieval/qa/true.")
+            detected_route = "retrieval"
+            detected_mode = "qa"
+            needs_retrieval = True
 
-        # Enforce Minimum Confidence Threshold
-        MIN_CONFIDENCE = 0.70
-        if confidence < MIN_CONFIDENCE:
-            self.log_step(f"Confidence {confidence:.2f} < {MIN_CONFIDENCE}. Fallback to retrieval.")
-            detected_category = "retrieval"
+        valid_routes = {"smalltalk", "retrieval", "direct"}
+        if detected_route == "small_talk":
+            detected_route = "smalltalk"
+        if detected_route not in valid_routes:
+            detected_route = "retrieval"
 
-        # Map to valid routes
-        valid_routes = {"small_talk", "retrieval", "memory", "multimodal", "reasoning"}
-        if detected_category not in valid_routes:
-            detected_category = "retrieval"
+        valid_modes = {"summary", "explain", "qa"}
+        if detected_mode not in valid_modes:
+            detected_mode = "qa"
 
         return {
-            "route": detected_category,
-            "confidence": confidence,
-            "needs_vision": False,
-            "needs_ocr": needs_ocr or detected_category == "multimodal",
-            "needs_memory": needs_memory or detected_category == "memory",
+            "route": detected_route,
+            "mode": detected_mode,
+            "needs_retrieval": needs_retrieval,
         }
+

@@ -70,10 +70,18 @@ class ReasoningAgent(BaseAgent):
 
         Returns
         -------
+        Returns
+        -------
         AgentState
-            Updated state with ``reasoning_context`` populated.
+            Updated state with ``reasoning_context`` populated and metadata.
         """
         self.validate_state(state, ["query", "retrieved_chunks"])
+        
+        # Determine language for template parser
+        query: str = state["query"]
+        query_lower = query.lower().strip()
+        is_arabic = any('\u0600' <= char <= '\u06FF' for char in query) or "arabic" in query_lower or "عربي" in query_lower
+        self._template_parser.set_language("ar" if is_arabic else "en")
 
         sections: List[str] = []
         source_count: int = 0
@@ -121,6 +129,8 @@ class ReasoningAgent(BaseAgent):
 
         state["reasoning_context"] = "\n\n".join(sections)
 
+        self._classify_context(state)
+
         state["agent_trace"].append(
             f"{self.agent_name}: assembled context from {source_count} source(s)"
         )
@@ -129,6 +139,63 @@ class ReasoningAgent(BaseAgent):
             f"{len(state['reasoning_context'])} chars total"
         )
         return state
+
+    def _classify_context(self, state: AgentState):
+        """
+        Use LLM to classify if the context is helpful.
+        """
+        query = state.get("query", "")
+        context = state.get("reasoning_context", "")
+
+        has_context = False
+        is_partial = False
+
+        if not context.strip():
+            state["metadata"]["has_context"] = False
+            state["metadata"]["is_partial"] = False
+            return
+
+        system_prompt = self._template_parser.get("rag", "reasoning_system_prompt")
+        prompt = f"Query: {query}\n\nContext:\n{context}\n\nRespond with strictly valid JSON only."
+
+        try:
+            llm_response = self._llm.generate_text(
+                prompt=prompt,
+                chat_history=[
+                    self._llm.construct_prompt(prompt=system_prompt, role=self._llm.enums.SYSTEM.value)
+                ]
+            )
+
+            import re
+            json_match = re.search(r'\{.*\}', llm_response or "", re.DOTALL)
+            if json_match:
+                clean_json = json_match.group(0)
+            else:
+                clean_json = (llm_response or "").strip()
+
+            import json
+            parsed = json.loads(clean_json)
+            
+            hc = parsed.get("has_context", False)
+            if isinstance(hc, str):
+                has_context = hc.lower() == "true"
+            else:
+                has_context = bool(hc)
+
+            ip = parsed.get("is_partial", False)
+            if isinstance(ip, str):
+                is_partial = ip.lower() == "true"
+            else:
+                is_partial = bool(ip)
+
+            self.log_step(f"Context classification: has_context={has_context}, is_partial={is_partial}")
+        except Exception as exc:
+            self.log_step(f"Context classification failed: {exc}. Defaulting to has_context=False, is_partial=False.")
+            has_context = False
+            is_partial = False
+
+        state["metadata"]["has_context"] = has_context
+        state["metadata"]["is_partial"] = is_partial
 
     def assemble_multimodal_context(self, state: AgentState) -> str:
         parts = []
@@ -209,7 +276,16 @@ class ReasoningAgent(BaseAgent):
         if state.get("ocr_text"): sources_used.append("ocr_text")
 
         state["sources_used"] = sources_used
+        
+        # Classification step
+        query: str = state.get("query", "")
+        query_lower = query.lower().strip()
+        is_arabic = any('\u0600' <= char <= '\u06FF' for char in query) or "arabic" in query_lower or "عربي" in query_lower
+        self._template_parser.set_language("ar" if is_arabic else "en")
+        
+        self._classify_context(state)
+        
         state["agent_trace"].append(
-            f"{self.agent_name}: multimodal context — sources: {sources_used}"
+            f"{self.agent_name}: multimodal context — sources: {sources_used}, has_context: {state['metadata'].get('has_context')}"
         )
         return state
