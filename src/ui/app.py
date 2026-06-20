@@ -28,7 +28,7 @@ Key changes (items 3, 7, 8):
 
 5. Summary & Quiz use the indexed pipeline, not file re-upload
    - Summary uses POST /v1/nlp/summarize/{project_id} with asset_ids + language
-   - Quiz uses /v1/nlp/agent-query/stream with a quiz query
+   - Only interactive quiz is kept (regular quiz removed)
 
 Architecture note
 -----------------
@@ -63,13 +63,7 @@ PROCESSING_STATUS_LABELS = {
     "FAILED":      "❌ Processing failed",
 }
 
-TEACHING_MODE_OPTIONS = {
-    "Default (auto)":       "",
-    "🏃 Quick Review":      "quick_review",
-    "📖 Full Explanation":  "full_explanation",
-    "📝 Exam Preparation":  "exam_prep",
-    "🐢 Step-by-Step":      "step_by_step",
-}
+
 
 # ── Page config ─────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -89,8 +83,8 @@ def _init_state():
         "processing_detail":   "",
         "is_processing":       False,
         "is_ready":            False,
-        # Teaching mode
-        "teaching_mode":       "",
+        # FIX: persist selected_asset_ids so sidebar buttons always have them
+        "selected_asset_ids":  [],
         # Interactive quiz state
         "quiz_active":         False,
         "quiz_questions":      [],
@@ -167,7 +161,7 @@ def _fetch_assets() -> list:
     return []
 
 
-def _stream_agent_query(query: str, asset_ids: list, teaching_mode: str) -> str:
+def _stream_agent_query(query: str, asset_ids: list) -> str:
     """
     Call /v1/nlp/agent-query/stream and stream tokens into a Streamlit
     placeholder.  Returns the full accumulated text.
@@ -176,8 +170,7 @@ def _stream_agent_query(query: str, asset_ids: list, teaching_mode: str) -> str:
         "query":         query,
         "project_id":    PROJECT_ID,
         "session_id":    SESSION_ID,
-        "asset_ids":     asset_ids,
-        "teaching_mode": teaching_mode,
+        "asset_ids":     [str(aid) for aid in asset_ids],   # FIX: always strings
         "image_paths":   [],
     }
 
@@ -213,7 +206,7 @@ def _stream_agent_query(query: str, asset_ids: list, teaching_mode: str) -> str:
     return full_text
 
 
-def _fetch_citations(query: str, asset_ids: list, teaching_mode: str) -> list:
+def _fetch_citations(query: str, asset_ids: list) -> list:
     """
     Call /v1/nlp/agent-query (non-streaming) in a lightweight way to
     get structured citations.  Only runs in the background after the
@@ -226,8 +219,7 @@ def _fetch_citations(query: str, asset_ids: list, teaching_mode: str) -> list:
                 "query":         query,
                 "project_id":    PROJECT_ID,
                 "session_id":    SESSION_ID,
-                "asset_ids":     asset_ids,
-                "teaching_mode": teaching_mode,
+                "asset_ids":     [str(aid) for aid in asset_ids],  # FIX: always strings
                 "image_paths":   [],
             },
             timeout=60,
@@ -239,6 +231,41 @@ def _fetch_citations(query: str, asset_ids: list, teaching_mode: str) -> list:
     return []
 
 
+# ── Suggestion parsing helpers ───────────────────────────────────────────────
+import re as _re
+
+_FULL_LECTURE_TRIGGERS = {"explain this lecture", "اشرح هذه المحاضرة"}
+
+def _is_full_lecture_request(text: str) -> bool:
+    return text.strip().lower() in _FULL_LECTURE_TRIGGERS
+
+def _parse_suggestions(text: str) -> list:
+    """
+    Extract [Button Label] items from the 'You can explore next:' footer.
+    Returns up to 5 unique labels (without brackets).
+    """
+    matches = _re.findall(r'\[([^\[\]]+?)\](?!\()', text)
+    seen, out = set(), []
+    for m in matches:
+        clean = m.strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            out.append(clean)
+        if len(out) >= 5:
+            break
+    return out
+
+def _strip_suggestions(text: str) -> str:
+    """Remove the suggestions footer from the displayed message text."""
+    text = _re.sub(
+        r'(You can explore next:|يمكنك استكشاف:).*',
+        '',
+        text,
+        flags=_re.DOTALL,
+    )
+    return text.rstrip()
+
+
 def _generate_quiz(asset_ids: list, language: str, num_questions: int, difficulty: str = "MEDIUM") -> dict | None:
     """Call POST /v1/quiz/generate/{PROJECT_ID} and return the parsed JSON."""
     try:
@@ -246,7 +273,7 @@ def _generate_quiz(asset_ids: list, language: str, num_questions: int, difficult
             f"{API_URL}/v1/quiz/generate/{PROJECT_ID}",
             json={
                 "num_questions": num_questions,
-                "asset_ids":     asset_ids,
+                "asset_ids":     [str(aid) for aid in asset_ids],  # FIX: always strings
                 "language":      language,
                 "difficulty":    difficulty,
             },
@@ -287,7 +314,7 @@ def _generate_diagram(asset_ids: list, language: str) -> dict | None:
     try:
         resp = requests.post(
             f"{API_URL}/v1/diagram/generate/{PROJECT_ID}",
-            json={"asset_ids": asset_ids, "language": language},
+            json={"asset_ids": [str(aid) for aid in asset_ids], "language": language},  # FIX: strings
             timeout=180,
         )
         if resp.ok:
@@ -298,12 +325,17 @@ def _generate_diagram(asset_ids: list, language: str) -> dict | None:
     return None
 
 
+# FIX: Summary streaming — /v1/nlp/summarize returns raw StreamingResponse
+# (plain text tokens, no SSE "data: " framing, no [DONE] sentinel).
+# The old code parsed it as SSE and received nothing.
 def _stream_summary(asset_ids: list, language: str) -> str:
     """
     Call /v1/nlp/summarize/{PROJECT_ID} with the map-reduce streaming path.
+    The backend yields raw text tokens (NOT SSE framed), so we read them
+    directly from the chunked HTTP response.
     Returns the full accumulated summary text.
     """
-    payload = {"asset_ids": asset_ids, "language": language}
+    payload = {"asset_ids": [str(aid) for aid in asset_ids], "language": language}
     placeholder = st.empty()
     full_text = ""
 
@@ -317,17 +349,13 @@ def _stream_summary(asset_ids: list, language: str) -> str:
             if not resp.ok:
                 st.error(f"Summary error {resp.status_code}: {resp.text[:200]}")
                 return ""
-            for raw_line in resp.iter_lines():
-                if not raw_line:
+            # Backend streams raw text — read chunk by chunk
+            for chunk in resp.iter_content(chunk_size=None, decode_unicode=True):
+                if not chunk:
                     continue
-                line = raw_line.decode("utf-8")
-                if not line.startswith("data: "):
-                    continue
-                token = line[6:]
-                if token == "[DONE]":
-                    break
-                token = token.replace("\\n", "\n")
-                full_text += token
+                # Unescape literal \n sequences the backend may emit
+                chunk = chunk.replace("\\n", "\n")
+                full_text += chunk
                 placeholder.markdown(full_text + "▌")
         placeholder.markdown(full_text)
     except Exception as exc:
@@ -389,7 +417,10 @@ def _run_processing_with_progress(asset_ids: list):
             st.session_state.is_ready       = True
             st.session_state.is_processing  = False
             # Refresh asset list now that indexing is done
-            st.session_state.uploaded_asset_ids = _fetch_assets()
+            fetched = _fetch_assets()
+            st.session_state.uploaded_asset_ids = fetched
+            # FIX: default to all lectures selected
+            st.session_state.selected_asset_ids = [str(a["asset_id"]) for a in fetched]
             status_box.success("✅ **Lecture indexed and ready! Start chatting below.**")
             progress_bar.progress(100)
             detail_box.empty()
@@ -428,47 +459,37 @@ with st.sidebar:
     st.caption(f"Session `{SESSION_ID[:8]}…`")
     st.divider()
 
-    # ── Teaching mode selector (item 7) ─────────────────────────────────
-    st.subheader("🎓 Teaching Mode")
-    selected_mode_label = st.selectbox(
-        "How should the tutor explain?",
-        list(TEACHING_MODE_OPTIONS.keys()),
-        index=0,
-        key="mode_selector",
-        help=(
-            "Quick Review — brief refresher\n"
-            "Full Explanation — deep teaching\n"
-            "Exam Prep — definitions & comparisons\n"
-            "Step-by-Step — slow, guided learning"
-        ),
-    )
-    teaching_mode = TEACHING_MODE_OPTIONS[selected_mode_label]
-    st.session_state.teaching_mode = teaching_mode
 
-    st.divider()
 
     # ── Lecture selector ─────────────────────────────────────────────────
     st.subheader("📄 Lectures")
     assets = st.session_state.get("uploaded_asset_ids", [])
 
     if assets:
-        asset_options = {"All lectures": None}
+        asset_options = {"All lectures": "__ALL__"}
         for a in assets:
-            asset_options[a["asset_name"]] = a["asset_id"]
+            asset_options[a["asset_name"]] = str(a["asset_id"])
 
         selected_lecture = st.selectbox(
             "Target lecture:",
             list(asset_options.keys()),
             key="lecture_selector",
         )
-        selected_asset_ids = (
-            [asset_options[selected_lecture]]
-            if asset_options[selected_lecture] is not None
-            else [a["asset_id"] for a in assets]
-        )
+
+        # FIX: resolve selection and persist in session state so sidebar
+        # buttons (Summary, Quiz, Diagram) always read the correct value
+        chosen_val = asset_options[selected_lecture]
+        if chosen_val == "__ALL__":
+            selected_asset_ids = [str(a["asset_id"]) for a in assets]
+        else:
+            selected_asset_ids = [chosen_val]
+
+        # Persist so actions triggered after rerun still see the right value
+        st.session_state.selected_asset_ids = selected_asset_ids
     else:
         st.caption("No lectures indexed yet.")
         selected_asset_ids = []
+        st.session_state.selected_asset_ids = []
 
     st.divider()
 
@@ -476,6 +497,17 @@ with st.sidebar:
     st.subheader("🌍 Output Language")
     tool_lang = st.radio("Language:", ["English", "العربية"], horizontal=True)
     lang_code = "en" if tool_lang == "English" else "ar"
+
+    st.divider()
+
+    # ── Explain This Lecture ──────────────────────────────────────────────
+    explain_lecture_btn = st.button(
+        "🎓 Explain This Lecture",
+        use_container_width=True,
+        disabled=not st.session_state.is_ready,
+        type="primary",
+        help="Walk through the entire lecture from start to finish.",
+    )
 
     st.divider()
 
@@ -490,20 +522,7 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Quiz ─────────────────────────────────────────────────────────────
-    st.subheader("🧠 Quiz")
-    num_questions = st.number_input(
-        "Number of questions:", min_value=1, max_value=50, value=5, step=1
-    )
-    quiz_btn = st.button(
-        "Generate Quiz",
-        use_container_width=True,
-        disabled=not st.session_state.is_ready,
-    )
-
-    st.divider()
-
-    # ── Interactive Quiz (new Feature 1) ─────────────────────────────────
+    # ── Interactive Quiz ──────────────────────────────────────────────────
     st.subheader("🎮 Interactive Quiz")
     st.caption("Answer questions one-by-one with hints and explanations.")
     iq_num_questions = st.number_input(
@@ -533,7 +552,7 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Diagram (new Feature 2) ──────────────────────────────────────────
+    # ── Diagram ──────────────────────────────────────────────────────────
     st.subheader("🗺️ Lecture Diagram")
     st.caption("Visual concept map of the entire lecture.")
     diagram_btn = st.button(
@@ -673,6 +692,10 @@ if not st.session_state.is_ready:
     st.stop()
 
 # ── Display chat history ─────────────────────────────────────────────────────
+# pending_suggestion: set when a suggestion button is clicked; consumed below
+if "pending_suggestion" not in st.session_state:
+    st.session_state.pending_suggestion = None
+
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"], unsafe_allow_html=True)
@@ -695,8 +718,30 @@ for msg in st.session_state.chat_history:
                 for step in msg["agent_trace"]:
                     st.markdown(f"- `{step}`")
 
+        # ── Suggestion buttons (only on the last assistant message) ──────
+        suggestions = msg.get("suggestions") or []
+        is_last_assistant = (
+            msg["role"] == "assistant"
+            and suggestions
+            and msg is st.session_state.chat_history[-1]
+        )
+        if is_last_assistant:
+            st.markdown("")
+            cols = st.columns(min(len(suggestions), 4))
+            for i, sug in enumerate(suggestions[:4]):
+                with cols[i]:
+                    btn_key = f"sug_{len(st.session_state.chat_history)}_{i}"
+                    if st.button(sug, key=btn_key, use_container_width=True):
+                        st.session_state.pending_suggestion = sug
+                        st.rerun()
 
-# ── Sidebar actions (summary / quiz) ────────────────────────────────────────
+
+# ── Read persisted asset selection (safe for all sidebar actions) ─────────────
+# Always read from session state — this survives reruns triggered by buttons
+_active_asset_ids = st.session_state.selected_asset_ids
+
+
+# ── Sidebar actions (summary) ────────────────────────────────────────────────
 if sum_btn:
     lang_label = "English" if lang_code == "en" else "العربية"
     display_text = f"Summarize lecture(s) [{lang_label}]"
@@ -708,7 +753,7 @@ if sum_btn:
     with st.chat_message("assistant"):
         with st.spinner("Generating full lecture summary (map-reduce)… ⏳"):
             answer = _stream_summary(
-                asset_ids=selected_asset_ids,
+                asset_ids=_active_asset_ids,
                 language=lang_code,
             )
 
@@ -720,29 +765,32 @@ if sum_btn:
     st.toast("✅ Summary complete!", icon="✅")
     st.rerun()
 
-if quiz_btn:
-    lang_inst = "in English" if lang_code == "en" else "باللغة العربية"
-    quiz_query = f"Generate quiz [{num_questions}] {lang_inst}"
-    display_text = f"Quiz — {num_questions} question(s) [{lang_label if 'lang_label' in dir() else tool_lang}]"
 
-    st.session_state.chat_history.append({"role": "user", "content": display_text})
+# ── Sidebar: Explain This Lecture button ─────────────────────────────────────
+if explain_lecture_btn:
+    trigger_text = "Explain This Lecture" if lang_code == "en" else "اشرح هذه المحاضرة"
+    display_label = "🎓 " + trigger_text
+
+    st.session_state.chat_history.append({"role": "user", "content": display_label})
     with st.chat_message("user"):
-        st.markdown(display_text)
+        st.markdown(display_label)
 
     with st.chat_message("assistant"):
-        with st.spinner("Generating quiz questions… ⏳"):
-            answer = _stream_agent_query(
-                query=quiz_query,
-                asset_ids=selected_asset_ids,
-                teaching_mode=teaching_mode,
-            )
+        st.caption("🎓 Walking through the full lecture…")
+        # Send the trigger phrase directly — the system prompt handles the rest
+        answer = _stream_agent_query(query=trigger_text, asset_ids=_active_asset_ids)
 
-    if answer:
-        st.session_state.chat_history.append({
-            "role":    "assistant",
-            "content": f"**🧠 Quiz**\n\n{answer}",
-        })
-    st.toast("✅ Quiz ready!", icon="✅")
+    suggestions = _parse_suggestions(answer)
+    clean_answer = _strip_suggestions(answer)
+    citations = _fetch_citations(query=trigger_text, asset_ids=_active_asset_ids)
+
+    st.session_state.chat_history.append({
+        "role":        "assistant",
+        "content":     clean_answer,
+        "citations":   citations,
+        "suggestions": suggestions,
+    })
+    st.toast("✅ Done!", icon="🎓")
     st.rerun()
 
 
@@ -750,7 +798,7 @@ if quiz_btn:
 if interactive_quiz_btn:
     with st.spinner(f"Generating {iq_num_questions} quiz questions from lecture ({iq_difficulty.lower()} difficulty)… ⏳"):
         quiz_data = _generate_quiz(
-            asset_ids=selected_asset_ids,
+            asset_ids=_active_asset_ids,
             language=lang_code,
             num_questions=iq_num_questions,
             difficulty=iq_difficulty,
@@ -770,7 +818,7 @@ if interactive_quiz_btn:
 if diagram_btn:
     with st.spinner("Generating lecture concept diagram… ⏳"):
         diagram_data = _generate_diagram(
-            asset_ids=selected_asset_ids,
+            asset_ids=_active_asset_ids,
             language=lang_code,
         )
     if diagram_data and diagram_data.get("content"):
@@ -792,10 +840,16 @@ if st.session_state.quiz_active:
     score     = st.session_state.quiz_score
 
     st.markdown("---")
-    st.subheader(f"🎮 Interactive Quiz  —  Question {idx + 1} of {total}  |  Score: {score}/{total}")
 
-    # Progress bar
-    st.progress(int(idx / total * 100))
+    # FIX: don't show "Question N of total" on the results screen
+    if idx >= total:
+        st.subheader(f"🎮 Interactive Quiz  —  Results  |  Score: {score}/{total}")
+    else:
+        st.subheader(f"🎮 Interactive Quiz  —  Question {idx + 1} of {total}  |  Score: {score}/{total}")
+
+    # FIX: progress bar — clamp to 100 on results screen
+    progress_pct = int(idx / total * 100) if idx < total else 100
+    st.progress(progress_pct)
 
     if idx >= total:
         # ── Final result screen ──────────────────────────────────────────
@@ -913,18 +967,42 @@ if st.session_state.show_diagram and st.session_state.diagram_data:
     with st.expander(f"🗺️ Lecture Diagram: **{diag.get('title', 'Concept Map')}**", expanded=True):
         mermaid_code = diag.get("content", "")
 
-        # Render Mermaid via an HTML component with Mermaid.js CDN
-        mermaid_html = f"""
-        <div class="mermaid" style="background:#fff; padding:16px; border-radius:8px;">
-        {mermaid_code}
-        </div>
-        <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
-        <script>mermaid.initialize({{startOnLoad:true, theme:'default'}});</script>
-        """
-        st.components.v1.html(mermaid_html, height=500, scrolling=True)
+        # FIX: sanitize Mermaid code before rendering to prevent syntax errors.
+        # 1. Strip markdown fences if the LLM wrapped the code anyway
+        import re as _re
+        mermaid_code = _re.sub(r"```(?:mermaid)?\s*", "", mermaid_code).strip("`").strip()
 
-        # Show raw Mermaid code toggle — use a checkbox instead of a nested
-        # expander because Streamlit does not allow nested st.expander calls.
+        # 2. Escape double-quotes inside node labels that Mermaid can't handle
+        #    and remove null bytes / control chars
+        mermaid_code = mermaid_code.replace("\x00", "").replace("\r", "")
+
+        # 3. Wrap the whole thing in a try-catch in JS so a bad diagram
+        #    shows a helpful error instead of a blank white box.
+        mermaid_html = f"""
+        <div id="mermaid-container" style="background:#fff; padding:16px; border-radius:8px; min-height:100px;">
+          <div class="mermaid" id="mermaid-diagram">
+{mermaid_code}
+          </div>
+        </div>
+        <div id="mermaid-error" style="display:none; color:#c00; padding:8px; background:#fee; border-radius:4px;"></div>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+        <script>
+          mermaid.initialize({{startOnLoad: false, theme: 'default', securityLevel: 'loose'}});
+          try {{
+            mermaid.run({{
+              nodes: [document.getElementById('mermaid-diagram')]
+            }});
+          }} catch(e) {{
+            document.getElementById('mermaid-container').style.display = 'none';
+            var errDiv = document.getElementById('mermaid-error');
+            errDiv.style.display = 'block';
+            errDiv.textContent = '⚠️ Diagram render error: ' + e.message + '. Raw code shown below.';
+          }}
+        </script>
+        """
+        st.components.v1.html(mermaid_html, height=520, scrolling=True)
+
+        # Always show raw code toggle for debugging / copy-paste
         if st.checkbox("📋 Show raw Mermaid code", key="show_raw_mermaid"):
             st.code(mermaid_code, language="text")
 
@@ -939,29 +1017,52 @@ user_input = st.chat_input(
     "Ask anything about your lecture…",
 )
 
-if user_input:
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
+# Resolve input — either from text box or a suggestion button click
+active_input = None
+if st.session_state.pending_suggestion:
+    active_input = st.session_state.pending_suggestion
+    st.session_state.pending_suggestion = None
+elif user_input:
+    active_input = user_input
+
+if active_input:
+    is_full_lecture = _is_full_lecture_request(active_input)
+
+    # Full Lecture: send the trigger phrase as-is — the system prompt handles it
+    if is_full_lecture:
+        llm_query     = active_input   # "Explain This Lecture" or "اشرح هذه المحاضرة"
+        display_label = "🎓 " + active_input
+    else:
+        llm_query     = active_input
+        display_label = active_input
+
+    st.session_state.chat_history.append({"role": "user", "content": display_label})
     with st.chat_message("user"):
-        st.markdown(user_input)
+        st.markdown(display_label)
 
     with st.chat_message("assistant"):
+        if is_full_lecture:
+            st.caption("🎓 Explain This Lecture mode — walking through the full lecture…")
         answer = _stream_agent_query(
-            query=user_input,
-            asset_ids=selected_asset_ids,
-            teaching_mode=st.session_state.teaching_mode,
+            query=llm_query,
+            asset_ids=_active_asset_ids,
         )
 
-    # Fetch citations from the non-streaming endpoint in the background
+    # Parse out suggestion buttons from the response
+    suggestions = _parse_suggestions(answer)
+    clean_answer = _strip_suggestions(answer)
+
+    # Fetch citations quietly
     citations = _fetch_citations(
-        query=user_input,
-        asset_ids=selected_asset_ids,
-        teaching_mode=st.session_state.teaching_mode,
+        query=llm_query,
+        asset_ids=_active_asset_ids,
     )
 
     st.session_state.chat_history.append({
-        "role":      "assistant",
-        "content":   answer,
-        "citations": citations,
+        "role":        "assistant",
+        "content":     clean_answer,
+        "citations":   citations,
+        "suggestions": suggestions,
     })
 
     st.toast("✅ Response complete!", icon="✅")

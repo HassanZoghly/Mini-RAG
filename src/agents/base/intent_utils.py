@@ -15,10 +15,18 @@ logic.
 
 from __future__ import annotations
 
-TASK_SUMMARY = "summary"
-TASK_QUIZ = "quiz"
-TASK_EXPLANATION = "explanation"
-TASK_SIMPLE_QA = "simple_qa"
+TASK_SUMMARY      = "summary"
+TASK_QUIZ         = "quiz"
+TASK_EXPLANATION  = "explanation"
+TASK_SIMPLE_QA    = "simple_qa"
+TASK_FULL_EXPLAIN = "full_explain"   # "Explain This Lecture" — whole-lecture walkthrough
+
+# ── Retrieval confidence thresholds ─────────────────────────────────────────
+# Scores below RETRIEVAL_SCORE_EMPTY  → treat as no data found (EMPTY)
+# Scores below RETRIEVAL_SCORE_PARTIAL → treat as weak match (PARTIAL)
+# Scores at or above RETRIEVAL_SCORE_PARTIAL → FULL context available
+RETRIEVAL_SCORE_EMPTY   = 0.10   # below this — nothing useful retrieved
+RETRIEVAL_SCORE_PARTIAL = 0.35   # below this — partial / weak retrieval
 
 
 _SUMMARY_KEYWORDS = (
@@ -29,6 +37,11 @@ _SUMMARY_KEYWORDS = (
 _QUIZ_KEYWORDS = (
     "quiz", "mcq", "multiple choice", "exam questions", "practice questions",
     "امتحان", "اختبار", "أسئلة اختيار", "اسئلة امتحان",
+)
+
+_FULL_EXPLAIN_KEYWORDS = (
+    "explain this lecture", "explain the lecture", "walk me through the lecture",
+    "اشرح هذه المحاضرة", "اشرح المحاضرة",
 )
 
 _EXPLANATION_KEYWORDS = (
@@ -46,11 +59,17 @@ _LONG_QUERY_WORD_THRESHOLD = 12
 def classify_task_type(query: str, route: str = "") -> str:
     """
     Classify *query* (optionally informed by the router's ``route``) into
-    one of ``TASK_SUMMARY``, ``TASK_QUIZ``, ``TASK_EXPLANATION``, or
-    ``TASK_SIMPLE_QA``.
+    one of the TASK_* constants.
+
+    Priority order (highest first):
+      FULL_EXPLAIN > SUMMARY > QUIZ > EXPLANATION > SIMPLE_QA
     """
     query_lower = (query or "").lower()
     route_lower = (route or "").lower()
+
+    # Full-lecture walkthrough takes highest priority
+    if any(kw in query_lower for kw in _FULL_EXPLAIN_KEYWORDS):
+        return TASK_FULL_EXPLAIN
 
     if route_lower == TASK_SUMMARY or any(kw in query_lower for kw in _SUMMARY_KEYWORDS):
         return TASK_SUMMARY
@@ -74,7 +93,8 @@ def classify_task_type(query: str, route: str = "") -> str:
 # (see RetrievalAgent / ChunkModel.get_all_chunks_ordered) and therefore has
 # no fetch/top_n here.
 RETRIEVAL_SIZES = {
-    TASK_SIMPLE_QA: {"fetch_limit": 15, "top_n": 5},
-    TASK_EXPLANATION: {"fetch_limit": 30, "top_n": 12},
-    TASK_QUIZ: {"fetch_limit": 60, "top_n": 20},
+    TASK_SIMPLE_QA:    {"fetch_limit": 15, "top_n": 5},
+    TASK_EXPLANATION:  {"fetch_limit": 30, "top_n": 12},
+    TASK_QUIZ:         {"fetch_limit": 60, "top_n": 20},
+    TASK_FULL_EXPLAIN: {"fetch_limit": 60, "top_n": 20},  # uses ordered retrieval like SUMMARY
 }

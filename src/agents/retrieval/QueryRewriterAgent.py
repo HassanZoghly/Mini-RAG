@@ -1,5 +1,5 @@
 from agents.base import BaseAgent, AgentState
-from agents.base.intent_utils import classify_task_type, TASK_SUMMARY, TASK_QUIZ
+from agents.base.intent_utils import classify_task_type, TASK_FULL_EXPLAIN, TASK_SUMMARY, TASK_QUIZ
 from typing import List
 
 
@@ -57,9 +57,9 @@ class QueryRewriterAgent(BaseAgent):
         route = state.get("metadata", {}).get("route", "")
         task_type = classify_task_type(query, route)
 
-        # Summaries/quizzes are intentionally broad — rewriting could
-        # narrow them in unhelpful ways, so leave them untouched.
-        if task_type in (TASK_SUMMARY, TASK_QUIZ) or not memory_context:
+        # Summaries, quizzes and full-lecture explains are intentionally broad —
+        # rewriting could narrow them in unhelpful ways, so leave them untouched.
+        if task_type in (TASK_SUMMARY, TASK_QUIZ, TASK_FULL_EXPLAIN) or not memory_context:
             state["query_for_retrieval"] = query
             state["agent_trace"].append(
                 f"{self.agent_name}: skipped (task_type={task_type}, "
@@ -87,15 +87,16 @@ class QueryRewriterAgent(BaseAgent):
 
         system_prompt = (
             "You rewrite a student's follow-up question into a standalone "
-            "search query for a lecture-retrieval system, using the recent "
-            "conversation as context.\n"
-            "- Keep the SAME language as the student's new question.\n"
-            "- Resolve references like 'this', 'that', 'the previous part' "
-            "into the actual topic/concept being discussed.\n"
-            "- Return ONLY the rewritten query text — no quotes, labels, "
-            "or explanation.\n"
-            "- If the question is already self-contained, return it "
-            "unchanged."
+            "search query for a lecture-retrieval system.\n\n"
+            "STRICT RULES:\n"
+            "- Do NOT change the meaning or intent of the question.\n"
+            "- Only resolve vague references ('this', 'that', 'the previous part', "
+            "'السابق', 'ده', 'كمل') into the actual topic from the conversation.\n"
+            "- Keep the SAME language as the student's question.\n"
+            "- Keep the SAME scope — do not broaden or narrow the question.\n"
+            "- Return ONLY the rewritten query text — no quotes, labels, or explanation.\n"
+            "- If the question is already self-contained, return it unchanged.\n"
+            "- If you are unsure how to resolve a reference, return the original question."
         )
 
         prompt = (

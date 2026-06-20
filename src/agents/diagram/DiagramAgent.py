@@ -193,16 +193,16 @@ class DiagramAgent:
             )
             user_prompt = (
                 "حوّل قائمة المفاهيم والعلاقات التالية إلى مخطط Mermaid من النوع flowchart TD.\n\n"
-                "القواعد:\n"
-                "- ابدأ بـ: graph TD\n"
-                "- استخدم معرّفات قصيرة للعقد (A, B, C, ...) مع تسميات واضحة بين قوسين مربعين\n"
-                "- إذا كانت التسمية تحتوي على مسافات أو أحرف خاصة، ضعها بين علامتي اقتباس\n"
-                "- استخدم --> للعلاقات العادية\n"
-                "- استخدم -->|نص| للعلاقات التي تحتاج وصفاً\n"
-                "- أضف subgraph للمجموعات المنطقية (أقسام المحاضرة)\n"
-                "- لا تضع أي نص قبل graph TD أو بعد آخر سطر\n\n"
+                "قواعد صارمة — أي خطأ فيها يسبب فشل التحليل:\n"
+                "- ابدأ بالسطر الأول فقط: graph TD\n"
+                "- استخدم معرّفات قصيرة بدون مسافات للعقد (A, B, C1, D2 ...)\n"
+                "- ضع تسمية كل عقدة دائماً بين علامتي اقتباس مزدوجة: A[\"التسمية\"] — ممنوع A[التسمية]\n"
+                "- ضع عنوان كل subgraph بين علامتي اقتباس: subgraph \"عنوان القسم\"\n"
+                "- استخدم --> للعلاقات\n"
+                "- لا تضع أي نص أو شرح أو أكواد markdown قبل graph TD أو بعد آخر سطر\n"
+                "- لا تستخدم الأقواس أو النقطتين أو الأحرف الخاصة خارج النصوص بين علامات الاقتباس\n\n"
                 f"قائمة المفاهيم:\n{concepts_text}\n\n"
-                "كود Mermaid:"
+                "كود Mermaid (ابدأ مباشرةً بـ graph TD):"
             )
         else:
             system = (
@@ -212,16 +212,17 @@ class DiagramAgent:
             )
             user_prompt = (
                 "Convert the following concept list and relationships into a Mermaid flowchart TD diagram.\n\n"
-                "Rules:\n"
-                "- Start with: graph TD\n"
-                "- Use short node IDs (A, B, C, ...) with clear labels in square brackets\n"
-                "- If a label contains spaces or special chars, wrap it in double quotes\n"
-                "- Use --> for standard relationships\n"
-                "- Use -->|label| for labelled relationships\n"
-                "- Use subgraph for logical groups (lecture sections)\n"
-                "- Do NOT put any text before 'graph TD' or after the last line\n\n"
+                "STRICT RULES — violating any rule causes a parse error:\n"
+                "- Start with exactly: graph TD\n"
+                "- Use short alphanumeric node IDs (A, B, C1, D2 — no spaces in IDs)\n"
+                "- ALWAYS wrap node labels in double quotes: A[\"My Label\"] — NEVER A[My Label]\n"
+                "- ALWAYS wrap subgraph titles in double quotes: subgraph \"Section Title\"\n"
+                "- Use --> for relationships\n"
+                "- Edge labels are optional; if used keep them short and in quotes: -->|\"label\"|\n"
+                "- Do NOT put any text, explanation, or markdown fences before 'graph TD' or after the last line\n"
+                "- Do NOT use parentheses, colons, or special characters outside of quoted strings\n\n"
                 f"Concept list:\n{concepts_text}\n\n"
-                "Mermaid code:"
+                "Mermaid code (start immediately with 'graph TD'):"
             )
 
         chat_history = [
@@ -245,13 +246,65 @@ class DiagramAgent:
     # ------------------------------------------------------------------
 
     def _clean_mermaid(self, raw: str) -> str:
-        """Strip markdown fences and normalise whitespace."""
-        cleaned = re.sub(r"```(?:mermaid)?", "", raw)
-        cleaned = cleaned.strip("`").strip()
+        """
+        Strip markdown fences, normalise whitespace, and fix the most common
+        Mermaid syntax errors produced by LLMs:
 
-        # Ensure it starts with a valid Mermaid header
+        1. Unquoted multi-word node labels:  A[Variational Autoencoders]
+           → fixed to:                       A["Variational Autoencoders"]
+
+        2. Unquoted edge labels containing spaces: -->|leads to|
+           → fixed to:                            -->|"leads to"|
+           (Mermaid actually accepts unquoted edge labels, so this is a
+           conservative fix that only quotes if they contain special chars.)
+
+        3. Stray markdown fences or backticks left by the LLM.
+
+        4. Control characters / null bytes.
+        """
+        # ── Step 1: strip markdown code fences ──────────────────────────
+        cleaned = re.sub(r"```(?:mermaid)?\s*", "", raw)
+        cleaned = cleaned.strip("`").strip()
+        cleaned = cleaned.replace("\x00", "").replace("\r", "")
+
+        # ── Step 2: ensure valid Mermaid header ──────────────────────────
         if not re.match(r"^\s*(graph|flowchart|mindmap|sequenceDiagram)", cleaned, re.I):
             cleaned = "graph TD\n" + cleaned
+
+        # ── Step 3: quote unquoted multi-word/special-char node labels ───
+        # Matches node definitions like:  ID[label text here]
+        # where the label is NOT already wrapped in quotes.
+        # Pattern: word-chars (node id), then [  or ([  or {  etc., then label, then closing bracket.
+        # We target square-bracket labels: ID[...] and ID([...])
+        def _quote_label(m: re.Match) -> str:
+            prefix   = m.group(1)  # e.g. "A" or "  A"
+            open_b   = m.group(2)  # "[" or "(["
+            label    = m.group(3)  # the label text
+            close_b  = m.group(4)  # "]" or "])"
+
+            # Already quoted → leave it alone
+            if label.startswith('"') and label.endswith('"'):
+                return m.group(0)
+            if label.startswith("'") and label.endswith("'"):
+                return m.group(0)
+
+            # Only needs quoting if it contains spaces, parentheses, colons,
+            # slashes, hyphens, or Arabic/special Unicode characters.
+            needs_quote = bool(re.search(r'[ \t\(\)\[\]:;/\\,\u0600-\u06FF\u0750-\u077F]', label))
+            if needs_quote:
+                # Escape any existing double-quotes inside the label
+                safe_label = label.replace('"', '\\"')
+                return f'{prefix}{open_b}"{safe_label}"{close_b}'
+
+            return m.group(0)
+
+        # Match:  <optional-spaces><node-id>  [  <label>  ]
+        # node-id: word chars + digits; open bracket: [ or ([; close: ] or ])
+        cleaned = re.sub(
+            r'([ \t]*\w+)\s*(\(\[|\[)([^\[\]"\']+?)(\]\)|\])',
+            _quote_label,
+            cleaned,
+        )
 
         return cleaned
 

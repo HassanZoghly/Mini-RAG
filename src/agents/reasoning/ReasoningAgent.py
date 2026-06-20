@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import List
 
 from agents.base import BaseAgent, AgentState
-from agents.base.intent_utils import TASK_SUMMARY, classify_task_type
+from agents.base.intent_utils import TASK_FULL_EXPLAIN, TASK_SUMMARY, classify_task_type
 
 # Maximum memory entries to include in the context string.
 _MAX_MEMORIES: int = 5
@@ -49,17 +49,21 @@ class ReasoningAgent(BaseAgent):
         task_type = classify_task_type(query, route)
         chunks: List[dict] = state.get("retrieved_chunks") or []
 
-        # ── SUMMARY: store chunks for SummaryGenerator, skip text dump ──
+        # ── SUMMARY: store chunks for SummaryGenerator ────
         if task_type == TASK_SUMMARY:
-            # SummaryGenerator (called from ResponseFormatterAgent) needs
-            # the ORM objects; they're stored in the chunks list under "_orm".
             state["reasoning_context"] = "__SUMMARY__"   # sentinel for ResponseFormatterAgent
             state["citations"] = []
             state["agent_trace"].append(
-                f"{self.agent_name}: summary task — {len(chunks)} ordered chunks "
+                f"{self.agent_name}: {task_type} task — {len(chunks)} ordered chunks "
                 f"ready for SummaryGenerator"
             )
             return state
+
+        # ── Read retrieval quality signal from RetrievalAgent ────────────
+        retrieval_quality = state.get("metadata", {}).get("retrieval_quality", "FULL")
+
+        # Write grounding instruction for ResponseFormatterAgent
+        state["metadata"]["retrieval_quality"] = retrieval_quality
 
         sections: List[str] = []
         source_count: int = 0

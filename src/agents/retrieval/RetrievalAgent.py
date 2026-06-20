@@ -23,6 +23,9 @@ from typing import List, Optional
 from agents.base import BaseAgent, AgentState
 from agents.base.intent_utils import (
     RETRIEVAL_SIZES,
+    RETRIEVAL_SCORE_EMPTY,
+    RETRIEVAL_SCORE_PARTIAL,
+    TASK_FULL_EXPLAIN,
     TASK_SUMMARY,
     classify_task_type,
 )
@@ -76,14 +79,17 @@ class RetrievalAgent(BaseAgent):
 
         task_type = classify_task_type(query, route)
 
-        # ── SUMMARY: ordered full-lecture retrieval ──────────────────────
-        if task_type == TASK_SUMMARY:
+        # ── SUMMARY / FULL_EXPLAIN: ordered full-lecture retrieval ───────
+        if task_type in (TASK_SUMMARY, TASK_FULL_EXPLAIN):
             chunks = await self._fetch_ordered_chunks(project_db_id, asset_ids)
             state["retrieved_chunks"] = chunks
+            # Ordered retrieval is never "empty" if the DB has content;
+            # signal FULL so the formatter doesn't block the response.
+            state["metadata"]["retrieval_quality"] = "FULL" if chunks else "EMPTY"
             state["agent_trace"].append(
-                f"{self.agent_name}: summary path — {len(chunks)} ordered chunks loaded"
+                f"{self.agent_name}: {task_type} path — {len(chunks)} ordered chunks loaded"
             )
-            self.log_step(f"summary: loaded {len(chunks)} ordered chunks")
+            self.log_step(f"{task_type}: loaded {len(chunks)} ordered chunks")
             return state
 
         # ── NON-SUMMARY: vector search + dynamic rerank ──────────────────
@@ -123,11 +129,6 @@ class RetrievalAgent(BaseAgent):
             return state
 
         # ── Vector search ────────────────────────────────────────────────
-        # Keep the threshold very low — cosine scores for valid but
-        # technical queries can be well below 0.05.  top_n already caps
-        # the number of chunks returned; a hard score cut only causes
-        # silent empty-retrieval bugs.
-        MIN_SCORE = 0.0
         try:
             raw_results = await self._vectordb_client.search_by_vector(
                 collection_name=collection_name,
@@ -147,7 +148,8 @@ class RetrievalAgent(BaseAgent):
         asset_ids_str = [str(a) for a in asset_ids] if asset_ids else []
 
         for doc in raw_results:
-            if doc.score < MIN_SCORE:
+            # Hard floor: discard results below the empty threshold
+            if doc.score < RETRIEVAL_SCORE_EMPTY:
                 continue
 
             meta = doc.metadata or {}
@@ -190,10 +192,25 @@ class RetrievalAgent(BaseAgent):
             chunks = sorted(chunks, key=lambda c: c["score"], reverse=True)[:top_n]
 
         state["retrieved_chunks"] = chunks
+
+        # ── Write retrieval quality signal ───────────────────────────────
+        # Downstream agents (ReasoningAgent, ResponseFormatterAgent) read
+        # this to decide how to frame the answer without re-inspecting scores.
+        if not chunks:
+            retrieval_quality = "EMPTY"
+        else:
+            best_score = max(c["score"] for c in chunks)
+            if best_score < RETRIEVAL_SCORE_PARTIAL:
+                retrieval_quality = "PARTIAL"
+            else:
+                retrieval_quality = "FULL"
+
+        state["metadata"]["retrieval_quality"] = retrieval_quality
         state["agent_trace"].append(
-            f"{self.agent_name}: {task_type} — {len(chunks)} chunks after rerank"
+            f"{self.agent_name}: {task_type} — {len(chunks)} chunks after rerank "
+            f"(quality={retrieval_quality})"
         )
-        self.log_step(f"returning {len(chunks)} chunks")
+        self.log_step(f"returning {len(chunks)} chunks, quality={retrieval_quality}")
         return state
 
     # ------------------------------------------------------------------

@@ -23,6 +23,7 @@ from typing import AsyncGenerator, List
 from agents.base import BaseAgent, AgentState
 from agents.base.intent_utils import (
     TASK_EXPLANATION,
+    TASK_FULL_EXPLAIN,
     TASK_QUIZ,
     TASK_SIMPLE_QA,
     TASK_SUMMARY,
@@ -31,10 +32,11 @@ from agents.base.intent_utils import (
 
 # Output token budget per task type
 _MAX_TOKENS = {
-    TASK_SUMMARY:     4000,
-    TASK_QUIZ:        3000,
-    TASK_EXPLANATION: 3000,
-    TASK_SIMPLE_QA:   1500,
+    TASK_SUMMARY:      4000,
+    TASK_FULL_EXPLAIN: 4000,
+    TASK_QUIZ:         3000,
+    TASK_EXPLANATION:  3000,
+    TASK_SIMPLE_QA:    1500,
 }
 
 
@@ -54,6 +56,24 @@ class ResponseFormatterAgent(BaseAgent):
 
     async def execute(self, state: AgentState) -> AgentState:
         self.validate_state(state, ["query", "metadata"])
+
+        # ── Fetch Lecture Status ─────────────────────────────────────────
+        # The processing_status_store is in-memory.  If the server restarted
+        # or this is a new process, status will be None for an already-indexed
+        # project.  We treat None (unknown) the same as READY so legitimate
+        # queries are never blocked by a missing in-memory entry.
+        from utils.processing_status import processing_status_store
+        project_id = state.get("project_id", "")
+        status_data = await processing_status_store.get_status(project_id)
+        current_status = status_data.get("status")
+
+        if current_status in ("READY", "FAILED", None):
+            state["metadata"]["lecture_status"] = "ready"
+            effective_status = "READY"
+        else:
+            state["metadata"]["lecture_status"] = "processing"
+            effective_status = current_status
+        state["metadata"]["raw_status"] = effective_status
 
         route = state["metadata"].get("route", "")
 
@@ -107,6 +127,22 @@ class ResponseFormatterAgent(BaseAgent):
 
     async def stream_execute(self, state: AgentState) -> AsyncGenerator[str, None]:
         self.validate_state(state, ["query", "metadata"])
+        
+        # ── Fetch Lecture Status ─────────────────────────────────────────
+        # Treat None (unknown / server restarted) the same as READY.
+        from utils.processing_status import processing_status_store
+        project_id = state.get("project_id", "")
+        status_data = await processing_status_store.get_status(project_id)
+        current_status = status_data.get("status")
+
+        if current_status in ("READY", "FAILED", None):
+            state["metadata"]["lecture_status"] = "ready"
+            effective_status = "READY"
+        else:
+            state["metadata"]["lecture_status"] = "processing"
+            effective_status = current_status
+        state["metadata"]["raw_status"] = effective_status
+
         route = state["metadata"].get("route", "")
 
         if route == "small_talk":
@@ -127,14 +163,6 @@ class ResponseFormatterAgent(BaseAgent):
                 yield token
             state["agent_trace"].append(
                 f"{self.agent_name}: streamed summary via SummaryGenerator"
-            )
-            return
-
-        reasoning_context = (state.get("reasoning_context") or "").strip()
-        if not reasoning_context:
-            yield "No content was retrieved. Please ensure the lecture has been processed and indexed."
-            state["agent_trace"].append(
-                f"{self.agent_name}: empty context — no retrieval"
             )
             return
 
@@ -177,7 +205,6 @@ class ResponseFormatterAgent(BaseAgent):
         query_lower = query.lower().strip()
         route = state.get("metadata", {}).get("route", "")
         task_type = classify_task_type(query, route)
-        teaching_mode: str = state.get("teaching_mode", "")
 
         # ── Detect language ──────────────────────────────────────────────
         is_arabic = any("\u0600" <= c <= "\u06FF" for c in query) or \
@@ -219,10 +246,6 @@ class ResponseFormatterAgent(BaseAgent):
             else:
                 system_prompt = en_sys.safe_substitute()
 
-        # ── Teaching-mode modifier (item 7) ──────────────────────────────
-        teaching_block = self._get_teaching_mode_block(teaching_mode, is_arabic)
-        if teaching_block:
-            system_prompt = system_prompt + "\n\n" + teaching_block
 
         chat_history = [
             self._llm.construct_prompt(
@@ -245,74 +268,94 @@ class ResponseFormatterAgent(BaseAgent):
                 "**INSTRUCTION:** Generate the quiz questions based on the content below."
             )
         else:
-            # Detailed Q&A instruction (item 2 — replaces "Be concise" with educational wording)
+            # Detailed Q&A instruction with strict grounding rules
             if is_arabic:
                 instruction = (
-                    "**تعليمات الإجابة (Q&A):**\n"
-                    "1. ابحث في المادة المرجعية بالأسفل عن الإجابة الدقيقة لسؤال الطالب.\n"
-                    "2. اشرح المفهوم بعمق: ابدأ بالحدس والفهم البديهي، ثم التفاصيل التقنية، ثم مثال إذا كان مفيداً.\n"
-                    "3. إذا كان السؤال يتضمن معادلات، اشرح معنى كل رمز بالعربية.\n"
-                    "4. قارن بالمفاهيم ذات الصلة ونبّه إلى الأخطاء الشائعة عند الضرورة.\n"
-                    "5. إذا لم تجد الإجابة في النص، قل 'المعلومة غير متوفرة في المحاضرة'."
+                    "**تعليمات الإجابة:**\n"
+                    "1. ابحث في المادة المرجعية أدناه عن الإجابة الدقيقة.\n"
+                    "2. إذا كان CONTEXT_QUALITY = FULL: أجب من المحاضرة فقط. لا تضف معلومات خارجية.\n"
+                    "3. إذا كان CONTEXT_QUALITY = PARTIAL: أشر إلى ذلك، ثم أجب مما هو متاح مع إضافة حد أدنى من المعرفة الخارجية الضرورية فقط.\n"
+                    "4. إذا كان CONTEXT_QUALITY = EMPTY أو CONTEXT_AVAILABLE = FALSE: قل فقط 'المعلومة غير متوفرة في المحاضرة المرفوعة.' ولا تخمّن.\n"
+                    "5. لا تخترع حقائق. لا تجيب من معرفتك الخاصة عند توفر سياق كافٍ.\n"
+                    "6. للمعادلات: اشرح معنى كل رمز بالعربية.\n"
+                    "7. قارن بالمفاهيم ذات الصلة ونبّه إلى الأخطاء الشائعة عند الضرورة."
                 )
             else:
                 instruction = (
-                    "**Q&A INSTRUCTIONS:**\n"
+                    "**ANSWERING RULES:**\n"
                     "1. Find the answer in the Reference Material below.\n"
-                    "2. Explain in depth: intuition first → technical details → worked example (when useful).\n"
-                    "3. For equations, explain what every symbol means in plain language — don't just write the formula.\n"
-                    "4. Compare with related concepts and flag common mistakes where relevant.\n"
-                    "5. If the answer is not in the provided material, say so explicitly."
+                    "2. If CONTEXT_QUALITY = FULL: answer strictly from the lecture. Do not add outside knowledge.\n"
+                    "3. If CONTEXT_QUALITY = PARTIAL: note that context is partial, then answer from what is available. Add minimal external knowledge only where the lecture is silent.\n"
+                    "4. If CONTEXT_QUALITY = EMPTY or CONTEXT_AVAILABLE = FALSE: respond only with 'The information is not available in the uploaded content.' Do not guess.\n"
+                    "5. Never invent facts. Never use your own knowledge when strong context exists.\n"
+                    "6. For equations: explain every symbol in plain language.\n"
+                    "7. Compare with related concepts and flag common mistakes where relevant."
                 )
 
         # ── Assemble final prompt ────────────────────────────────────────
-        ref_section = reasoning_context if reasoning_context else "No reference material was found."
-        full_prompt = (
-            f"{instruction}\n\n"
-            f"## Student Question:\n{query}\n\n"
-            f"---\n## Reference Material:\n\n{ref_section}"
-        )
+        ref_section = reasoning_context if reasoning_context else ""
+        
+        if task_type in (TASK_EXPLANATION, TASK_SIMPLE_QA):
+            history_lines = []
+            for mem in state.get("memory_context", []):
+                if mem.get("memory_type") == "short_term":
+                    history_lines.append(mem.get("content", ""))
+            conversation_history = "\n".join(history_lines[-3:]) # last 3 turns
+            
+            current_topic = state.get("metadata", {}).get("current_topic", "")
+            
+            raw_status = state.get("metadata", {}).get("raw_status", "READY")
+            # raw_status is already normalised by execute/stream_execute above;
+            # anything other than active mid-pipeline states is treated as READY.
+            if raw_status in ("PROCESSING", "EXTRACTING", "CHUNKING", "EMBEDDING", "INDEXING"):
+                state_val = "PROCESSING"
+            else:
+                state_val = "READY"
+                
+            chunks = state.get("retrieved_chunks") or []
+            # Use the quality signal written by RetrievalAgent — this correctly
+            # distinguishes EMPTY (no chunks above threshold) from PARTIAL (weak
+            # scores) from FULL (strong matches), instead of just checking len(chunks).
+            retrieval_quality = state.get("metadata", {}).get("retrieval_quality", "FULL")
+
+            # If retrieval_quality is EMPTY, set context_available = FALSE even
+            # when there are technically some chunks (they're below threshold).
+            if retrieval_quality == "EMPTY" or not chunks:
+                context_available = "FALSE"
+                context_quality = "EMPTY"
+            elif retrieval_quality == "PARTIAL":
+                context_available = "TRUE"
+                context_quality = "PARTIAL"
+            else:
+                context_available = "TRUE"
+                context_quality = "FULL"
+            
+            import json
+            input_json = {
+                "STATE": state_val,
+                "CONTEXT_AVAILABLE": context_available,
+                "CONTEXT_QUALITY": context_quality,
+                "lecture_context": ref_section,
+                "conversation_history": conversation_history,
+                "current_topic": current_topic,
+                "user_request": query
+            }
+            input_str = json.dumps(input_json, ensure_ascii=False, indent=2)
+            
+            full_prompt = (
+                f"{instruction}\n\n"
+                f"```json\n{input_str}\n```"
+            )
+        else:
+            full_prompt = (
+                f"{instruction}\n\n"
+                f"## Student Question:\n{query}\n\n"
+                f"---\n## Reference Material:\n\n{ref_section}"
+            )
 
         return full_prompt, chat_history
 
     # ------------------------------------------------------------------
-    # Teaching-mode block (item 7)
-    # ------------------------------------------------------------------
-
-    def _get_teaching_mode_block(self, teaching_mode: str, is_arabic: bool) -> str:
-        """Return the teaching-mode prompt modifier string, or ''."""
-        if not teaching_mode:
-            return ""
-
-        mode = teaching_mode.strip().lower()
-
-        if is_arabic:
-            from stores.llm.templates.locales.ar import rag as ar_rag
-
-            _MAP = {
-                "quick_review":     getattr(ar_rag, "teaching_mode_quick_review",     None),
-                "full_explanation": getattr(ar_rag, "teaching_mode_full_explanation", None),
-                "exam_prep":        getattr(ar_rag, "teaching_mode_exam_prep",        None),
-                "step_by_step":     getattr(ar_rag, "teaching_mode_step_by_step",     None),
-            }
-        else:
-            from stores.llm.templates.locales.en import rag as en_rag
-
-            _MAP = {
-                "quick_review":     getattr(en_rag, "teaching_mode_quick_review",     None),
-                "full_explanation": getattr(en_rag, "teaching_mode_full_explanation", None),
-                "exam_prep":        getattr(en_rag, "teaching_mode_exam_prep",        None),
-                "step_by_step":     getattr(en_rag, "teaching_mode_step_by_step",     None),
-            }
-
-        template = _MAP.get(mode)
-        if template is None:
-            return ""
-
-        try:
-            return template.safe_substitute()
-        except Exception:
-            return ""
 
     # ------------------------------------------------------------------
     # Sources / citations block (item 8)

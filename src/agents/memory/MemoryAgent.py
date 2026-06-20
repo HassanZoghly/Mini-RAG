@@ -95,18 +95,7 @@ class MemoryAgent(BaseAgent):
             for r in records
         ]
 
-        # ── 2. Preference (teaching mode) ────────────────────────────────
-        existing_mode: str = (state.get("teaching_mode") or "").strip()
-        if not existing_mode:
-            try:
-                pref = await self._memory_store.get_preference(session_id)
-                if pref and pref.get("teaching_mode"):
-                    state["teaching_mode"] = pref["teaching_mode"]
-                    self.log_step(
-                        f"restored teaching_mode='{state['teaching_mode']}' from preference"
-                    )
-            except Exception as exc:
-                self.log_step(f"preference load failed (non-fatal): {exc}")
+
 
         # ── 3. Progress (topics covered) ─────────────────────────────────
         try:
@@ -131,6 +120,21 @@ class MemoryAgent(BaseAgent):
                 self.log_step(f"loaded {len(covered_topics)} covered topics")
         except Exception as exc:
             self.log_step(f"progress load failed (non-fatal): {exc}")
+            covered_topics = []
+
+        # ── 4. Current Topic extraction (Intent Handling) ────────────────
+        current_topics = self._extract_topics(query)
+        if current_topics:
+            if "metadata" not in state: state["metadata"] = {}
+            state["metadata"]["current_topic"] = current_topics[0]
+            self.log_step(f"extracted new current_topic: {current_topics[0]}")
+        elif covered_topics:
+            if "metadata" not in state: state["metadata"] = {}
+            state["metadata"]["current_topic"] = covered_topics[-1]
+            self.log_step(f"kept previous current_topic: {covered_topics[-1]}")
+        else:
+            if "metadata" not in state: state["metadata"] = {}
+            state["metadata"]["current_topic"] = ""
 
         state["memory_context"] = memory_context
         state["agent_trace"].append(
@@ -156,7 +160,7 @@ class MemoryAgent(BaseAgent):
         query:      str = state.get("query", "")
         response:   str = state.get("final_response", "")
         session_id: str = (state.get("metadata") or {}).get("session_id", "default")
-        teaching_mode: str = (state.get("teaching_mode") or "").strip()
+
 
         if not query:
             return
@@ -181,23 +185,7 @@ class MemoryAgent(BaseAgent):
         except Exception as exc:
             self.log_step(f"save short_term failed: {exc}")
 
-        # ── 2. Teaching-mode preference ──────────────────────────────────
-        if teaching_mode:
-            try:
-                query_lower = query.lower()
-                lang = "ar" if any("\u0600" <= c <= "\u06FF" for c in query) else "en"
-                await self._memory_store.store_preference(
-                    session_id=session_id,
-                    preference_data={
-                        "teaching_mode": teaching_mode,
-                        "language":      lang,
-                    },
-                )
-                self.log_step(
-                    f"saved preference: teaching_mode='{teaching_mode}' lang='{lang}'"
-                )
-            except Exception as exc:
-                self.log_step(f"save preference failed (non-fatal): {exc}")
+
 
         # ── 3. Progress — extract topics from query ──────────────────────
         topics = self._extract_topics(query)
