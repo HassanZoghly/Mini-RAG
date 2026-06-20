@@ -72,6 +72,65 @@ class OpenAIProvider(LLMInterface):
 
         return response.choices[0].message.content
 
+    async def generate_stream(self, prompt: str, chat_history: list=[], max_output_tokens: int=None,
+                              temperature: float = None):
+        if not self.client:
+            self.logger.error("OpenAI client was not set")
+            yield "Error: OpenAI client was not set"
+            return
+
+        if not self.generation_model_id:
+            self.logger.error("Generation model for OpenAI was not set")
+            yield "Error: Generation model for OpenAI was not set"
+            return
+
+        max_output_tokens = max_output_tokens if max_output_tokens else self.default_generation_max_output_tokens
+        temperature = temperature if temperature else self.default_generation_temperature
+
+        # Create a new list so we don't modify the original chat_history argument
+        history = list(chat_history)
+        history.append(
+            self.construct_prompt(prompt=prompt, role=OpenAIEnums.USER.value)
+        )
+
+        try:
+            loop = __import__("asyncio").get_event_loop()
+            queue = __import__("asyncio").Queue()
+
+            def _run():
+                try:
+                    response = self.client.chat.completions.create(
+                        model=self.generation_model_id,
+                        messages=history,
+                        max_tokens=max_output_tokens,
+                        temperature=temperature,
+                        stream=True
+                    )
+                    for chunk in response:
+                        if chunk.choices and len(chunk.choices) > 0:
+                            delta = chunk.choices[0].delta
+                            if delta.content:
+                                loop.call_soon_threadsafe(queue.put_nowait, delta.content)
+                except Exception as e:
+                    loop.call_soon_threadsafe(queue.put_nowait, e)
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+
+            loop.run_in_executor(None, _run)
+
+            while True:
+                token = await queue.get()
+                if token is None:
+                    break
+                if isinstance(token, Exception):
+                    self.logger.error(f"Error while streaming text with OpenAI: {token}")
+                    yield f"Error: {token}"
+                    break
+                yield token
+        except Exception as e:
+            self.logger.error(f"Error initializing OpenAI stream: {e}")
+            yield f"Error: {e}"
+
 
     def embed_text(self, text: Union[str, List[str]], document_type: str = None):
 

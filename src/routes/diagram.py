@@ -84,7 +84,6 @@ async def generate_diagram(
 
         agent = DiagramAgent(
             generation_client=request.app.generation_client,
-            template_parser=request.app.template_parser,
             language=body.language or "en",
         )
 

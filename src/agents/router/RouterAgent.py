@@ -113,16 +113,33 @@ class RouterAgent(BaseAgent):
         normalised = query.lower().strip()
         tokens = set(normalised.split())
 
+        # Check for vision/ocr via heuristics
         needs_ocr = bool(_OCR_KEYWORDS & tokens) or any(
             phrase in normalised for phrase in _OCR_KEYWORDS if " " in phrase
         )
+
         needs_memory = any(
             kw in normalised
-            for kw in ("previous", "earlier", "last time", "you said", "remember", "recall", "history", "before", "as i mentioned", "conversation")
+            for kw in (
+                "previous", "earlier", "last time", "you said",
+                "remember", "recall", "history", "before",
+                "as i mentioned", "conversation",
+            )
         )
 
-        # 🔥 سحب الـ Prompt النظيف
-        system_prompt = self._template_parser.get("rag", "router_system_prompt")
+        # Attempt JSON-Based LLM Intent Detection
+        system_prompt = (
+            "You are an intent classification system for an educational AI Assistant (RAG application).\n"
+            "You MUST prioritize educational and lecture-related requests over casual conversation.\n"
+            "Classify the following user query into exactly ONE of these categories:\n\n"
+            "- retrieval: (Priority) Queries asking to summarize a lecture, explain a topic, generate a quiz, create MCQs, define a concept, or answer a factual question. (e.g. 'summarize this', 'what is bagging?', 'generate a quiz')\n"
+            "- reasoning: Complex comparative or analytical educational questions. (e.g. 'compare boosting and bagging')\n"
+            "- multimodal: Questions specifically asking to explain or analyze an attached image.\n"
+            "- memory: Questions asking about previous conversation history. (e.g. 'what did I just ask?')\n"
+            "- small_talk: (Lowest Priority) Simple greetings or casual social chatter with NO educational request. (e.g. 'hi', 'hello', 'thanks', 'how are you?')\n\n"
+            "Return ONLY a valid JSON object matching this schema:\n"
+            '{"intent": "category_name", "confidence": 0.95}'
+        )
 
         detected_category = "retrieval"
         confidence = 0.0

@@ -352,11 +352,17 @@ async def get_summary(request: Request, project_id: str):
         template_parser=request.app.template_parser,
     )
 
+    async def sse_generator():
+        async for chunk in nlp_controller.generate_summary_stream(project=project, limit=15):
+            escaped_chunk = chunk.replace("\n", "\\n")
+            yield f"data: {escaped_chunk}\n\n"
+        yield "data: [DONE]\n\n"
+
     # Streaming — prevents read timeout on large/OCR-scanned lectures.
     # The client receives text chunks word-by-word instead of waiting for the
     # full response, exactly like answer_stream does for chat.
     return StreamingResponse(
-        nlp_controller.generate_summary_stream(project=project, limit=15),
+        sse_generator(),
         media_type="text/event-stream",
     )
 
@@ -373,8 +379,14 @@ async def answer_rag_stream(request: Request, project_id: str, search_request: S
         template_parser=request.app.template_parser,
     )
 
+    async def sse_generator():
+        async for chunk in nlp_controller.answer_rag_question_stream(project=project, query=search_request.text, limit=search_request.limit):
+            escaped_chunk = chunk.replace("\n", "\\n")
+            yield f"data: {escaped_chunk}\n\n"
+        yield "data: [DONE]\n\n"
+
     return StreamingResponse(
-        nlp_controller.answer_rag_question_stream(project=project, query=search_request.text, limit=search_request.limit),
+        sse_generator(),
         media_type="text/event-stream"
     )
 

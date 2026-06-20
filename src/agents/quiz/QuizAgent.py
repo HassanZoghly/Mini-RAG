@@ -75,16 +75,14 @@ class QuizAgent:
     def __init__(
         self,
         generation_client,
-        template_parser,
         language: str = "en",
         num_questions: int = 10,
         difficulty: str = "MEDIUM",
     ) -> None:
-        self._llm             = generation_client
-        self._template_parser = template_parser
-        self._language        = language if language in ("ar", "en") else "en"
-        self._num_q           = max(1, min(30, num_questions))
-        self._difficulty      = difficulty.upper() if difficulty.upper() in ("EASY", "MEDIUM", "HARD") else "MEDIUM"
+        self._llm          = generation_client
+        self._language     = language if language in ("ar", "en") else "en"
+        self._num_q        = max(1, min(30, num_questions))
+        self._difficulty   = difficulty.upper() if difficulty.upper() in ("EASY", "MEDIUM", "HARD") else "MEDIUM"
 
     # ------------------------------------------------------------------
     # Public API
@@ -150,9 +148,8 @@ class QuizAgent:
 
     def _call_llm(self, content: str) -> Optional[str]:
         """Call the LLM with the quiz-generation prompt. Return raw text."""
-        self._template_parser.set_language(self._language)
-        system_prompt = self._template_parser.get("rag", "quiz_generation_system_prompt", {"difficulty": self._difficulty})
-        user_prompt = self._template_parser.get("rag", "quiz_generation_user_prompt", {"content": content, "num_q": self._num_q})
+        system_prompt = self._system_prompt()
+        user_prompt   = self._user_prompt(content)
 
         chat_history = [
             self._llm.construct_prompt(

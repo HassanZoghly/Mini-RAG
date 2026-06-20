@@ -174,7 +174,7 @@ class NLPController(BaseController):
         full_prompt = "\n\n".join([documents_prompts, self.template_parser.get("rag", "footer_prompt", {"query": query})])
         chat_history = [self.generation_client.construct_prompt(prompt=system_prompt, role=self.generation_client.enums.SYSTEM.value)]
 
-        for chunk in self.generation_client.generate_stream(prompt=full_prompt, chat_history=chat_history):
+        async for chunk in self.generation_client.generate_stream(prompt=full_prompt, chat_history=chat_history):
             yield chunk
 
     async def generate_quiz(self, project: Project, limit: int = 5):
@@ -298,7 +298,7 @@ class NLPController(BaseController):
 
         full_prompt = "\n\n".join([documents_prompts, footer_prompt])
 
-        for chunk in self.generation_client.generate_stream(
+        async for chunk in self.generation_client.generate_stream(
             prompt=full_prompt,
             chat_history=chat_history,
         ):
