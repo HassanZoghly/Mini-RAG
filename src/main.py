@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from routes import base, data, nlp
+from routes import base, data, nlp, diagram, quiz  # <-- تم إضافة diagram و quiz
 from helpers.config import get_settings
 from stores.llm.LLMProviderFactory import LLMProviderFactory
 from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
@@ -31,7 +31,7 @@ async def startup_span():
 
     # generation client
     app.generation_client = llm_provider_factory.create(provider=settings.GENERATION_BACKEND)
-    app.generation_client.set_generation_model(model_id = settings.GENERATION_MODEL_ID)
+    app.generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
 
     # embedding client
     app.embedding_client = llm_provider_factory.create(provider=settings.EMBEDDING_BACKEND)
@@ -55,8 +55,6 @@ async def startup_span():
 
     app.agent_graph = GraphFactory.create(app)
 
-
-
 async def shutdown_span():
     app.db_engine.dispose()
     await app.vectordb_client.disconnect()
@@ -67,3 +65,5 @@ app.on_event("shutdown")(shutdown_span)
 app.include_router(base.base_router)
 app.include_router(data.data_router)
 app.include_router(nlp.nlp_router)
+app.include_router(diagram.diagram_router)  
+app.include_router(quiz.quiz_router)        

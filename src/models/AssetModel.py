@@ -1,7 +1,6 @@
 from .BaseDataModel import BaseDataModel
 from .db_schemes import Asset
 from .enums.DataBaseEnum import DataBaseEnum
-from bson import ObjectId
 from sqlalchemy.future import select
 
 class AssetModel(BaseDataModel):
@@ -18,8 +17,7 @@ class AssetModel(BaseDataModel):
     async def create_asset(self, asset: Asset):
 
         async with self.db_client() as session:
-            async with session.begin():
-                session.add(asset)
+            session.add(asset)
             await session.commit()
             await session.refresh(asset)
         return asset

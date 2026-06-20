@@ -1,8 +1,16 @@
+import os
+
 from .minirag_base import SQLAlchemyBase
 from sqlalchemy import Column, String, Float
 from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
 import uuid
+
+# Read the embedding size from the environment so the DB column stays in
+# sync with whichever embedding model is configured.  Falls back to 384
+# (the default model in .env.example) when the variable is absent.
+_EMBEDDING_SIZE = int(os.getenv("EMBEDDING_MODEL_SIZE", "384"))
+
 
 class MemoryModel(SQLAlchemyBase):
     __tablename__ = "memories"
@@ -22,5 +30,5 @@ class MemoryModel(SQLAlchemyBase):
 
     importance_score = Column(Float, default=0.5)
 
-    # متجه pgvector بحجم 1024 (الخاص بـ CoHere)
-    embedding = Column(Vector(1024))
+    # متجه pgvector — الحجم مرن بناءً على متغير البيئة EMBEDDING_MODEL_SIZE
+    embedding = Column(Vector(_EMBEDDING_SIZE))

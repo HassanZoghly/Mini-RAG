@@ -26,7 +26,7 @@ nlp_router = APIRouter(
 )
 
 @nlp_router.post("/index/push/{project_id}")
-async def index_project(request: Request, project_id: int, push_request: PushRequest):
+async def index_project(request: Request, project_id: str, push_request: PushRequest):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.db_client
@@ -112,7 +112,7 @@ async def index_project(request: Request, project_id: int, push_request: PushReq
     )
 
 @nlp_router.get("/index/info/{project_id}")
-async def get_project_index_info(request: Request, project_id: int):
+async def get_project_index_info(request: Request, project_id: str):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.db_client
@@ -139,7 +139,7 @@ async def get_project_index_info(request: Request, project_id: int):
     )
 
 @nlp_router.post("/index/search/{project_id}")
-async def search_index(request: Request, project_id: int, search_request: SearchRequest):
+async def search_index(request: Request, project_id: str, search_request: SearchRequest):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.db_client
@@ -176,7 +176,7 @@ async def search_index(request: Request, project_id: int, search_request: Search
     )
 
 @nlp_router.post("/index/answer/{project_id}")
-async def answer_rag(request: Request, project_id: int, search_request: SearchRequest):
+async def answer_rag(request: Request, project_id: str, search_request: SearchRequest):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.db_client
@@ -322,7 +322,7 @@ async def generate_visualization(request: VisualizeRequest):
 
 
 @nlp_router.post("/quiz/{project_id}")
-async def get_quiz(request: Request, project_id: int):
+async def get_quiz(request: Request, project_id: str):
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
 
@@ -341,7 +341,7 @@ async def get_quiz(request: Request, project_id: int):
     return JSONResponse(content={"signal": "quiz_success", "quiz": quiz})
 
 @nlp_router.post("/summarize/{project_id}")
-async def get_summary(request: Request, project_id: int):
+async def get_summary(request: Request, project_id: str):
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
 
@@ -362,7 +362,7 @@ async def get_summary(request: Request, project_id: int):
 
 
 @nlp_router.post("/index/answer_stream/{project_id}")
-async def answer_rag_stream(request: Request, project_id: int, search_request: SearchRequest):
+async def answer_rag_stream(request: Request, project_id: str, search_request: SearchRequest):
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
 
@@ -552,7 +552,7 @@ async def multimodal_query_stream(
     query: str = Form(...),
     project_id: str = Form(...),
     session_id: str = Form(default="default"),
-    visualize: bool = Form(default=False), # <-- تم إضافة متغير الرسم هنا
+    visualize: bool = Form(default=False), # <-- متغير الرسم التوضيحي
     files: list[UploadFile] = File(default=[])
 ):
     tmp_dir = tempfile.mkdtemp()
@@ -579,7 +579,7 @@ async def multimodal_query_stream(
     initial_state.update({k: v for k, v in file_state.items()
                            if k not in ("image_paths", "uploaded_files")})
     initial_state["metadata"]["session_id"] = session_id
-    initial_state["metadata"]["visualize"] = visualize # حفظ اختيار المستخدم
+    initial_state["metadata"]["visualize"] = visualize 
 
     async def event_generator():
         try:
@@ -591,9 +591,9 @@ async def multimodal_query_stream(
                 full_text += token.replace("\\n", "\n")
                 yield f"data: {token}\n\n"
 
-            # 🔥 الجزء الجديد الخاص بتوليد الرسمة بعد انتهاء الكتابة
+            # 🔥 دمج VisualizationAgent بعد انتهاء الإجابة
             if state.get("metadata", {}).get("visualize"):
-                yield f"data: \\n\\n⏳ *جاري إنشاء رسوم توضيحية للملخص (Napkin AI)...*\\n\\n"
+                yield f"data: \n\n⏳ *جاري إنشاء رسوم توضيحية للملخص (Napkin AI)...\n\n"
 
                 state["final_response"] = full_text
                 from agents.visualization.VisualizationAgent import VisualizationAgent
@@ -602,10 +602,9 @@ async def multimodal_query_stream(
 
                 vis_urls = state.get("visualization_urls", [])
                 if vis_urls:
-                    yield f"data: \\n\\n### 🎨 رسوم ومخططات توضيحية:\\n\\n"
-                    # عرض كل الصور تحت بعضها
+                    yield f"data: \n\n### 🎨 رسوم ومخططات توضيحية:\n\n"
                     for idx, v_url in enumerate(vis_urls):
-                        md_img = f"![Visualization {idx+1}]({v_url})\\n\\n"
+                        md_img = f"![Visualization {idx+1}]({v_url})\n\n"
                         yield f"data: {md_img}\n\n"
 
             yield "data: [DONE]\n\n"

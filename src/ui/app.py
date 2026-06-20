@@ -1,176 +1,118 @@
-import streamlit as st
-import requests
+"""
+Mini-RAG Streamlit Frontend — Clean Synchronous Flow.
+"""
+
+import time
 import uuid
+import requests
+import streamlit as st
 import os
 
+# ── Config ─────────────────────────────────────────────────────────────────────
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 
+ALLOWED_TYPES = ["pdf", "png", "jpg", "jpeg", "webp", "bmp", "tiff",
+                 "txt", "md", "csv", "json", "html"]
+
+# ── Page config ─────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Mini-RAG",
+    page_title="Mini-RAG AI Tutor",
     page_icon="📚",
     layout="wide",
 )
 
-# ── session state ──────────────────────────────────────────────────────────────
-# session_id doubles as project_id — each session is an isolated workspace.
-# The user never sees or types a project_id.
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+# ── Session state init ──────────────────────────────────────────────────────────
+def _init_state():
+    defaults = {
+        "session_id":          str(uuid.uuid4()),
+        "chat_history":        [],
+        # Upload / processing
+        "uploaded_asset_ids":  [],      # list of {asset_id, asset_name}
+        "is_ready":            False,
+        # Interactive quiz state
+        "quiz_active":         False,
+        "quiz_questions":      [],
+        "quiz_index":          0,
+        "quiz_score":          0,
+        "quiz_answers":        {},
+        # Diagram state
+        "diagram_data":        None,
+        "show_diagram":        False,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-# ── sidebar ────────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.title("Mini-RAG")
-    st.caption("Multi-Agent · Multimodal · Memory")
-    st.divider()
+_init_state()
 
-    if st.button("New Session", use_container_width=True):
-        st.session_state.session_id = str(uuid.uuid4())
-        st.session_state.chat_history = []
-        st.rerun()
-
-    st.caption(f"Session `{st.session_state.session_id[:8]}...`")
-
-# project_id is derived from session — never exposed to the user
 SESSION_ID = st.session_state.session_id
-PROJECT_ID = SESSION_ID          # backend uses this as the vector-DB project namespace
+PROJECT_ID = SESSION_ID   # backend project namespace
 
-# ── file uploader ──────────────────────────────────────────────────────────────
-with st.expander("📂 Upload lectures", expanded=True):
-    uploaded_files = st.file_uploader(
-        "Drop files here — PDFs, images, or text. Multiple files allowed.",
-        type=["pdf", "png", "jpg", "jpeg", "webp", "bmp", "tiff",
-              "txt", "md", "csv", "json", "html"],
-        accept_multiple_files=True,
-        key="file_uploader",
-        label_visibility="collapsed",
-    )
 
-    if uploaded_files:
-        cols = st.columns(min(len(uploaded_files), 5))
-        for i, f in enumerate(uploaded_files):
-            with cols[i % 5]:
-                if f.type == "application/pdf":
-                    icon = "📄"
-                elif f.type.startswith("image/"):
-                    icon = "🖼️"
-                else:
-                    icon = "📝"
-                st.caption(f"{icon} {f.name}")
+# ══════════════════════════════════════════════════════════════════════════════
+# Backend helpers
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ── Sidebar (القائمة الجانبية) ────────────────────────────────────────────────
-with st.sidebar:
-    st.title("🛠️ أدوات المحاضرات")
-    st.divider()
+def _upload_file(file_obj) -> dict | None:
+    try:
+        resp = requests.post(
+            f"{API_URL}/v1/data/upload/{PROJECT_ID}",
+            files={"file": (file_obj.name, file_obj.getvalue(), file_obj.type)},
+            timeout=120,
+        )
+        if resp.ok:
+            return resp.json()
+        st.error(f"Upload failed for {file_obj.name}: {resp.text[:200]}")
+    except Exception as exc:
+        st.error(f"Upload error: {exc}")
+    return None
 
-    # 1. القائمة المنسدلة لاختيار المحاضرة
-    file_options = ["جميع المحاضرات"] + [f.name for f in uploaded_files] if uploaded_files else ["جميع المحاضرات"]
-    selected_file = st.selectbox("📄 المحاضرة المستهدفة:", file_options)
+def _process_file(file_id: str) -> bool:
+    try:
+        resp = requests.post(
+            f"{API_URL}/v1/data/process/{PROJECT_ID}",
+            json={"file_id": file_id, "chunk_size": 800, "overlap_size": 125, "do_reset": 0},
+            timeout=180,
+        )
+        if resp.ok:
+            return True
+        st.error(f"Processing failed for file ID {file_id}: {resp.text[:200]}")
+    except Exception as exc:
+        st.error(f"Process error: {exc}")
+    return False
 
-    # 2. لغة المخرجات
-    tool_lang = st.radio("🌍 لغة المخرجات:", ["English", "العربية"], horizontal=True)
+def _index_project() -> bool:
+    try:
+        resp = requests.post(
+            f"{API_URL}/v1/nlp/index/push/{PROJECT_ID}",
+            json={"do_reset": 1},
+            timeout=300,
+        )
+        if resp.ok:
+            return True
+        st.error(f"Indexing failed: {resp.text[:200]}")
+    except Exception as exc:
+        st.error(f"Indexing error: {exc}")
+    return False
 
-    st.divider()
-    st.subheader("🎨 الرسوم التوضيحية (Napkin AI)")
-    st.caption("اختر نوع الرسم واضغط على الزر لتحويل آخر إجابة إلى رسمة:")
-
-    # قائمة بأنواع الرسومات لتوجيه Napkin
-    vis_options = {
-        "خريطة ذهنية (Mind Map)": "Mind Map",
-        "مخطط انسيابي (Flowchart)": "Flowchart",
-        "هيكل تنظيمي (Hierarchy)": "Hierarchy diagram",
-        "مقارنة (Comparison)": "Comparison table or diagram",
-        "دورة حياة (Cycle)": "Cycle diagram"
+def _stream_agent_query(query: str, asset_ids: list) -> str:
+    payload = {
+        "query":         query,
+        "project_id":    PROJECT_ID,
+        "session_id":    SESSION_ID,
+        "asset_ids":     asset_ids,
+        "image_paths":   [],
     }
-    selected_vis_ar = st.selectbox("نوع الرسم:", list(vis_options.keys()))
-    selected_vis_en = vis_options[selected_vis_ar]
-
-    if st.button("🎨 ارسم الإجابة الأخيرة", use_container_width=True):
-        # البحث عن آخر إجابة للموديل في الشات
-        last_assistant_msg = None
-        for msg in reversed(st.session_state.chat_history):
-            if msg["role"] == "assistant" and "<img" not in msg["content"]:
-                last_assistant_msg = msg["content"]
-                break
-
-        if not last_assistant_msg:
-            st.toast("⚠️ لا توجد إجابة سابقة لرسمها!", icon="⚠️")
-        else:
-            with st.spinner(f"جاري إنشاء {selected_vis_ar}... ⏳"):
-                try:
-                    # توجيه Napkin بشكل صريح لنوع الرسمة المطلوبة
-                    vis_prompt = f"Please strictly generate a {selected_vis_en} for the following content:\n\n{last_assistant_msg}"
-
-                    res = requests.post(
-                        f"{API_URL}/v1/nlp/visualize",
-                        json={"text": vis_prompt},
-                        timeout=120
-                    )
-
-                    if res.ok:
-                        data = res.json()
-                        b64_list = data.get("images_base64", [])
-                        if b64_list:
-                            html_images = ""
-                            for b64 in b64_list:
-                                # 🔥 السر هنا: استخدام HTML لتصغير الحجم (width="60%") وعمل توسيط للصورة
-                                html_images += f'<div style="text-align: center;"><img src="data:image/png;base64,{b64}" width="65%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin-bottom: 20px;"/></div>'
-
-                            st.session_state.chat_history.append({
-                                "role": "assistant",
-                                "content": f"**تم توليد: {selected_vis_ar}**\n\n{html_images}"
-                            })
-                            st.rerun()
-                        else:
-                            st.error("لم يتم إرجاع أي رسمة من السيرفر.")
-                    else:
-                        st.error(f"خطأ في الاتصال: {res.text}")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-    # 3. قسم التلخيص
-    st.subheader("📋 التلخيص")
-    sum_btn = st.button("إنشاء ملخص", use_container_width=True)
-
-    st.divider()
-
-    # 4. قسم الاختبار (مع تحديد عدد الأسئلة)
-    st.subheader("🧠 الاختبار (Quiz)")
-    num_questions = st.number_input("🔢 عدد الأسئلة:", min_value=1, max_value=50, value=5, step=1)
-    quiz_btn = st.button("توليد أسئلة", use_container_width=True)
-
-# 💡 الفلترة الذكية (تجهيز الملفات للباك-إند)
-if selected_file == "جميع المحاضرات":
-    target_files = uploaded_files
-else:
-    target_files = [f for f in uploaded_files if f.name == selected_file]
-
-# ── helpers ────────────────────────────────────────────────────────────────────
-def build_files_payload(files):
-    if not files:
-        return []
-    return [("files", (f.name, f.getvalue(), f.type)) for f in files]
-
-def stream_query(query: str, files, visualize: bool = False) -> str:
-    form_data = {
-        "query":      query,
-        "project_id": PROJECT_ID,
-        "session_id": SESSION_ID,
-        "visualize":  str(visualize).lower()
-    }
-    files_payload = build_files_payload(files)
 
     placeholder = st.empty()
-    full_text   = ""
+    full_text = ""
 
     try:
         with requests.post(
-            f"{API_URL}/v1/nlp/multimodal-query/stream",
-            data=form_data,
-            files=files_payload or None,
+            f"{API_URL}/v1/nlp/agent-query/stream",
+            json=payload,
             stream=True,
-            timeout=180,
+            timeout=300,
         ) as resp:
             if not resp.ok:
                 st.error(f"Backend error {resp.status_code}: {resp.text[:200]}")
@@ -179,83 +121,605 @@ def stream_query(query: str, files, visualize: bool = False) -> str:
                 if not raw_line:
                     continue
                 line = raw_line.decode("utf-8")
-                if line.startswith("data: "):
-                    token = line[6:]
-                    if token == "[DONE]":
-                        break
-
-                    token = token.replace("\\n", "\n")
-                    full_text += token
-                    placeholder.markdown(full_text + "▌")
+                if not line.startswith("data: "):
+                    continue
+                token = line[6:]
+                if token == "[DONE]":
+                    break
+                token = token.replace("\\n", "\n")
+                full_text += token
+                placeholder.markdown(full_text + "▌")
         placeholder.markdown(full_text)
     except Exception as exc:
-        st.error(f"Request failed: {exc}")
+        st.error(f"Stream request failed: {exc}")
 
     return full_text
 
-def fetch_trace_and_sources(query: str, files) -> tuple[list, list]:
+def _fetch_citations(query: str, asset_ids: list) -> list:
     try:
         resp = requests.post(
-            f"{API_URL}/v1/nlp/multimodal-query",
-            data={"query": query, "project_id": PROJECT_ID, "session_id": SESSION_ID},
-            files=build_files_payload(files) or None,
+            f"{API_URL}/v1/nlp/agent-query",
+            json={
+                "query":         query,
+                "project_id":    PROJECT_ID,
+                "session_id":    SESSION_ID,
+                "asset_ids":     asset_ids,
+                "image_paths":   [],
+            },
             timeout=60,
         )
         if resp.ok:
-            data = resp.json()
-            return data.get("agent_trace", []), data.get("sources_used", [])
+            return resp.json().get("citations") or []
     except Exception:
         pass
-    return [], []
+    return []
 
-# ── chat history display ───────────────────────────────────────────────────────
+def _generate_quiz(asset_ids: list, language: str, num_questions: int, difficulty: str = "MEDIUM") -> dict | None:
+    try:
+        resp = requests.post(
+            f"{API_URL}/v1/quiz/generate/{PROJECT_ID}",
+            json={
+                "num_questions": num_questions,
+                "asset_ids":     asset_ids,
+                "language":      language,
+                "difficulty":    difficulty,
+            },
+            timeout=180,
+        )
+        if resp.ok:
+            return resp.json()
+        st.error(f"Quiz generation failed ({resp.status_code}): {resp.text[:200]}")
+    except Exception as exc:
+        st.error(f"Quiz request error: {exc}")
+    return None
+
+def _check_answer(question_data: dict, user_answer: str) -> dict | None:
+    try:
+        resp = requests.post(
+            f"{API_URL}/v1/quiz/answer",
+            json={
+                "question_id":    question_data["id"],
+                "question":       question_data["question"],
+                "correct_answer": question_data["correct_answer"],
+                "user_answer":    user_answer,
+                "hint":           question_data.get("hint", ""),
+                "explanation":    question_data.get("explanation", ""),
+            },
+            timeout=15,
+        )
+        if resp.ok:
+            return resp.json()
+    except Exception as exc:
+        st.error(f"Answer check error: {exc}")
+    return None
+
+def _generate_diagram(asset_ids: list, language: str) -> dict | None:
+    try:
+        resp = requests.post(
+            f"{API_URL}/v1/diagram/generate/{PROJECT_ID}",
+            json={"asset_ids": asset_ids, "language": language},
+            timeout=180,
+        )
+        if resp.ok:
+            return resp.json()
+        st.error(f"Diagram generation failed ({resp.status_code}): {resp.text[:200]}")
+    except Exception as exc:
+        st.error(f"Diagram request error: {exc}")
+    return None
+
+def _stream_summary(asset_ids: list, language: str) -> str:
+    payload = {"asset_ids": asset_ids, "language": language}
+    placeholder = st.empty()
+    full_text = ""
+
+    try:
+        with requests.post(
+            f"{API_URL}/v1/nlp/summarize/{PROJECT_ID}",
+            json=payload,
+            stream=True,
+            timeout=600,
+        ) as resp:
+            if not resp.ok:
+                st.error(f"Summary error {resp.status_code}: {resp.text[:200]}")
+                return ""
+            for raw_line in resp.iter_lines():
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8")
+                if not line.startswith("data: "):
+                    continue
+                token = line[6:]
+                if token == "[DONE]":
+                    break
+                token = token.replace("\\n", "\n")
+                full_text += token
+                placeholder.markdown(full_text + "▌")
+        placeholder.markdown(full_text)
+    except Exception as exc:
+        st.error(f"Summary request failed: {exc}")
+
+    return full_text
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Sidebar
+# ══════════════════════════════════════════════════════════════════════════════
+
+with st.sidebar:
+    st.title("📚 Mini-RAG")
+    st.caption("AI Tutor · Multi-Agent · RAG")
+    st.divider()
+
+    if st.button("🔄 New Session", use_container_width=True):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        _init_state()
+        st.rerun()
+
+    st.caption(f"Session `{SESSION_ID[:8]}…`")
+    st.divider()
+
+    # ── Lecture selector ─────────────────────────────────────────────────
+    st.subheader("📄 Lectures")
+    assets = st.session_state.get("uploaded_asset_ids", [])
+
+    if assets:
+        asset_options = {"All lectures": None}
+        for a in assets:
+            asset_options[a["asset_name"]] = a["asset_id"]
+
+        selected_lecture = st.selectbox(
+            "Target lecture:",
+            list(asset_options.keys()),
+            key="lecture_selector",
+        )
+        selected_asset_ids = (
+            [asset_options[selected_lecture]]
+            if asset_options[selected_lecture] is not None
+            else [a["asset_id"] for a in assets]
+        )
+    else:
+        st.caption("No lectures indexed yet.")
+        selected_asset_ids = []
+
+    st.divider()
+
+    # ── Output language ──────────────────────────────────────────────────
+    st.subheader("🌍 Output Language")
+    tool_lang = st.radio("Language:", ["English", "العربية"], horizontal=True)
+    lang_code = "en" if tool_lang == "English" else "ar"
+
+    st.divider()
+
+    # ── Summary ──────────────────────────────────────────────────────────
+    st.subheader("📋 Summary")
+    st.caption("Full map-reduce summary of the selected lecture(s).")
+    sum_btn = st.button(
+        "Generate Summary",
+        use_container_width=True,
+        disabled=not st.session_state.is_ready,
+    )
+
+    st.divider()
+
+    # ── Interactive Quiz (new Feature 1) ─────────────────────────────────
+    st.subheader("🎮 Interactive Quiz")
+    st.caption("Answer questions one-by-one with hints and explanations.")
+    iq_num_questions = st.number_input(
+        "Questions:", min_value=1, max_value=20, value=5, step=1,
+        key="iq_num_q",
+    )
+    iq_difficulty = st.selectbox(
+        "Difficulty:",
+        ["EASY", "MEDIUM", "HARD"],
+        index=1,
+        key="iq_diff",
+    )
+    interactive_quiz_btn = st.button(
+        "▶ Start Interactive Quiz",
+        use_container_width=True,
+        disabled=not st.session_state.is_ready,
+        type="primary",
+    )
+    if st.session_state.quiz_active:
+        if st.button("✖ Exit Quiz", key="exit_quiz_sidebar_btn", use_container_width=True):
+            st.session_state.quiz_active    = False
+            st.session_state.quiz_questions = []
+            st.session_state.quiz_index     = 0
+            st.session_state.quiz_score     = 0
+            st.session_state.quiz_answers   = {}
+            st.rerun()
+
+    st.divider()
+
+    # ── Diagram (new Feature 2) ──────────────────────────────────────────
+    st.subheader("🗺️ Lecture Diagram")
+    st.caption("Visual concept map of the entire lecture.")
+    diagram_btn = st.button(
+        "Generate Diagram",
+        use_container_width=True,
+        disabled=not st.session_state.is_ready,
+    )
+
+    # ── Napkin visualisation ──────────────────────────────────────────────
+    st.subheader("🎨 Visualize (Napkin AI)")
+    vis_options = {
+        "Mind Map":              "Mind Map",
+        "Flowchart":             "Flowchart",
+        "Hierarchy diagram":     "Hierarchy diagram",
+        "Comparison table":      "Comparison table or diagram",
+        "Cycle diagram":         "Cycle diagram",
+    }
+    selected_vis = st.selectbox("Diagram type:", list(vis_options.keys()))
+    if st.button("Draw last answer", use_container_width=True, disabled=not st.session_state.is_ready):
+        last_msg = next(
+            (m["content"] for m in reversed(st.session_state.chat_history)
+             if m["role"] == "assistant" and "<img" not in m["content"]),
+            None,
+        )
+        if not last_msg:
+            st.toast("No previous answer to visualize.", icon="⚠️")
+        else:
+            with st.spinner("Generating visualization…"):
+                try:
+                    vis_prompt = (
+                        f"Please strictly generate a {vis_options[selected_vis]} "
+                        f"for the following content:\n\n{last_msg}"
+                    )
+                    res = requests.post(
+                        f"{API_URL}/v1/nlp/visualize",
+                        json={"text": vis_prompt},
+                        timeout=120,
+                    )
+                    if res.ok:
+                        b64_list = res.json().get("images_base64", [])
+                        if b64_list:
+                            html_imgs = "".join(
+                                f'<div style="text-align:center">'
+                                f'<img src="data:image/png;base64,{b64}" '
+                                f'width="65%" style="border-radius:8px; '
+                                f'box-shadow:0 4px 8px rgba(0,0,0,0.1); margin-bottom:20px"/>'
+                                f'</div>'
+                                for b64 in b64_list
+                            )
+                            st.session_state.chat_history.append({
+                                "role":    "assistant",
+                                "content": f"**{selected_vis}**\n\n{html_imgs}",
+                            })
+                            st.rerun()
+                        else:
+                            st.error("No image returned by Napkin AI.")
+                    else:
+                        st.error(f"Napkin API error: {res.text[:200]}")
+                except Exception as exc:
+                    st.error(f"Visualization error: {exc}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Main area — Upload + Processing gate
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.title("📚 Mini-RAG AI Tutor")
+
+# ── Upload section ───────────────────────────────────────────────────────────
+with st.expander(
+    "📂 Upload Lecture Files",
+    expanded=not st.session_state.is_ready,
+):
+    st.caption(
+        "Upload your lecture PDF(s) or text files. Once uploaded, the system "
+        "will automatically extract, chunk, embed and index them. "
+        "**You can only chat after processing is complete.**"
+    )
+
+    uploaded_files = st.file_uploader(
+        "Drop files here",
+        type=ALLOWED_TYPES,
+        accept_multiple_files=True,
+        key="file_uploader",
+        label_visibility="collapsed",
+    )
+
+    if uploaded_files and not st.session_state.is_ready:
+        if st.button("⚡ Upload & Process", type="primary", use_container_width=True):
+            
+            # 1. إنشاء مكان لعرض الحالة وشريط التحميل
+            status_text = st.empty()
+            progress_bar = st.progress(0)
+
+            all_success = True
+            new_assets = []
+            total_files = len(uploaded_files)
+
+            for i, f in enumerate(uploaded_files):
+                # ── مرحلة الرفع (Uploading) ──
+                status_text.info(f"📤 Uploading: {f.name}...")
+                upload_res = _upload_file(f)
+
+                if upload_res and upload_res.get("file_id"):
+                    file_id = upload_res["file_id"]
+                    new_assets.append({"asset_name": f.name, "asset_id": file_id})
+
+                    # ── مرحلة التقطيع (Chunking) ──
+                    status_text.warning(f"✂️ Chunking: {f.name}...")
+                    
+                    # تحديث شريط التحميل (الرفع والتقطيع يمثلون 50% من العملية)
+                    progress_bar.progress(int(((i + 0.5) / total_files) * 50))
+
+                    if not _process_file(file_id):
+                        all_success = False
+                        break
+                else:
+                    all_success = False
+                    break
+
+            if all_success:
+                # ── مرحلة التحويل والحفظ (Embedding & Indexing) ──
+                status_text.info("🧮 Embedding & 📥 Indexing into Vector DB...")
+                progress_bar.progress(75)
+
+                if _index_project():
+                    progress_bar.progress(100)
+                    status_text.success("✅ **Lectures processed and indexed successfully! You can now start chatting.**")
+                    st.session_state.uploaded_asset_ids = new_assets
+                    st.session_state.is_ready = True
+                    time.sleep(1.5) # وقت قصير عشان المستخدم يشوف رسالة النجاح
+                    st.rerun()
+                else:
+                    status_text.error("❌ Failed during the Embedding/Indexing phase.")
+            else:
+                status_text.error("❌ Failed during the Upload/Chunking phase.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Chat interface (only shown after READY)
+# ══════════════════════════════════════════════════════════════════════════════
+
+if not st.session_state.is_ready:
+    st.info(
+        "👆 Upload a lecture file above and click **Upload & Process** "
+        "to get started. Chat will be enabled once indexing is complete."
+    )
+    st.stop()
+
+# ── Display chat history ─────────────────────────────────────────────────────
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"], unsafe_allow_html=True)
-        if msg.get("sources_used"):
-            with st.expander("Sources used", expanded=False):
-                for s in msg["sources_used"]:
-                    st.markdown(f"- {s}")
+
+        # Citations / Sources (item 8)
+        citations = msg.get("citations") or []
+        if citations:
+            with st.expander("📌 Sources", expanded=False):
+                for cit in citations:
+                    parts = [f"**{cit.get('source', '')}**"]
+                    if cit.get("page"):
+                        parts.append(f"Page {cit['page']}")
+                    if cit.get("section"):
+                        parts.append(f"*{cit['section']}*")
+                    st.markdown("- " + " · ".join(parts))
+
+        # Agent trace (debug)
         if msg.get("agent_trace"):
-            with st.expander("Agent trace", expanded=False):
+            with st.expander("🔍 Agent trace", expanded=False):
                 for step in msg["agent_trace"]:
                     st.markdown(f"- `{step}`")
 
-# ── Sidebar Actions Processing ─────────────────────────────────────────────────
-lang_instruction = "in English" if tool_lang == "English" else "باللغة العربية"
-target_instruction = "all the provided lectures" if selected_file == "جميع المحاضرات" else f"ONLY the lecture titled '{selected_file}'"
 
+# ── Sidebar actions (summary / quiz / diagram) ───────────────────────────────
 if sum_btn:
-    SUMMARY_QUERY = f"Summarize {target_instruction} {lang_instruction}"
-    display_text = f"Summarize {selected_file} ({tool_lang})"
+    lang_label = "English" if lang_code == "en" else "العربية"
+    display_text = f"Summarize lecture(s) [{lang_label}]"
     st.session_state.chat_history.append({"role": "user", "content": display_text})
+
     with st.chat_message("user"):
         st.markdown(display_text)
-    with st.chat_message("assistant"):
-        with st.spinner("جاري إعداد الملخص... ⏳"):
-            answer = stream_query(SUMMARY_QUERY, target_files)
-    st.toast("✅ اكتمل الملخص!", icon="✅")
-    if answer:
-        st.session_state.chat_history.append({"role": "assistant", "content": f"**Summary**\n\n{answer}"})
-        st.rerun()
 
-if quiz_btn:
-    # تضمين عدد الأسئلة بين قوسين ليتمكن الباك-إند من قراءته
-    QUIZ_QUERY = f"Generate quiz [{num_questions}] for {target_instruction} {lang_instruction}"
-    display_text = f"Quiz ({num_questions} questions) on {selected_file} ({tool_lang})"
-    st.session_state.chat_history.append({"role": "user", "content": display_text})
-    with st.chat_message("user"):
-        st.markdown(display_text)
     with st.chat_message("assistant"):
-        with st.spinner("جاري إعداد الأسئلة... ⏳"):
-            answer = stream_query(QUIZ_QUERY, target_files)
-    st.toast("✅ اكتملت الأسئلة!", icon="✅")
-    if answer:
-        st.session_state.chat_history.append({"role": "assistant", "content": f"**Quiz**\n\n{answer}"})
-        st.rerun()
+        with st.spinner("Generating full lecture summary (map-reduce)… ⏳"):
+            answer = _stream_summary(
+                asset_ids=selected_asset_ids,
+                language=lang_code,
+            )
 
-# ── chat input ─────────────────────────────────────────────────────────────────
-user_input = st.chat_input("Ask anything about your documents...")
+    if answer:
+        st.session_state.chat_history.append({
+            "role":    "assistant",
+            "content": f"**📋 Lecture Summary**\n\n{answer}",
+        })
+    st.toast("✅ Summary complete!", icon="✅")
+    st.rerun()
+
+if interactive_quiz_btn:
+    with st.spinner(f"Generating {iq_num_questions} quiz questions from lecture ({iq_difficulty.lower()} difficulty)… ⏳"):
+        quiz_data = _generate_quiz(
+            asset_ids=selected_asset_ids,
+            language=lang_code,
+            num_questions=iq_num_questions,
+            difficulty=iq_difficulty,
+        )
+    if quiz_data and quiz_data.get("questions"):
+        st.session_state.quiz_questions = quiz_data["questions"]
+        st.session_state.quiz_active    = True
+        st.session_state.quiz_index     = 0
+        st.session_state.quiz_score     = 0
+        st.session_state.quiz_answers   = {}
+        st.toast(f"✅ {len(quiz_data['questions'])} questions ready!", icon="🎮")
+        st.rerun()
+    else:
+        st.error("Failed to generate quiz questions. Please try again.")
+
+if diagram_btn:
+    with st.spinner("Generating lecture concept diagram… ⏳"):
+        diagram_data = _generate_diagram(
+            asset_ids=selected_asset_ids,
+            language=lang_code,
+        )
+    if diagram_data and diagram_data.get("content"):
+        st.session_state.diagram_data  = diagram_data
+        st.session_state.show_diagram  = True
+        st.rerun()
+    else:
+        st.error("Failed to generate diagram. Please try again.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Interactive Quiz view (replaces chat when active)
+# ══════════════════════════════════════════════════════════════════════════════
+
+if st.session_state.quiz_active:
+    questions = st.session_state.quiz_questions
+    idx       = st.session_state.quiz_index
+    total     = len(questions)
+    score     = st.session_state.quiz_score
+
+    st.markdown("---")
+
+    if idx >= total:
+        # ── Final result screen ──────────────────────────────────────────
+        st.subheader(f"🏁 Quiz Results  |  Final Score: {score}/{total}")
+        st.progress(100)
+        
+        pct = int(score / total * 100)
+        if pct >= 80:
+            st.success(f"🎉 Excellent! You scored **{score}/{total}** ({pct}%)")
+        elif pct >= 50:
+            st.warning(f"👍 Good effort! You scored **{score}/{total}** ({pct}%)")
+        else:
+            st.error(f"📚 Keep studying! You scored **{score}/{total}** ({pct}%)")
+
+        st.markdown("### 📋 Review your answers")
+        for q in questions:
+            qid      = q["id"]
+            ans_data = st.session_state.quiz_answers.get(qid, {})
+            if ans_data.get("correct"):
+                icon = "✅"
+            elif qid in st.session_state.quiz_answers:
+                icon = "❌"
+            else:
+                icon = "⬜"
+
+            with st.expander(f"{icon} {q['question']}", expanded=False):
+                st.markdown(f"**Correct answer:** {q['correct_answer']}")
+                if ans_data.get("user_answer"):
+                    st.markdown(f"**Your answer:** {ans_data['user_answer']}")
+                if q.get("explanation"):
+                    st.info(f"💡 {q['explanation']}")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Retry Quiz", use_container_width=True):
+                st.session_state.quiz_index   = 0
+                st.session_state.quiz_score   = 0
+                st.session_state.quiz_answers = {}
+                st.rerun()
+        with col2:
+            if st.button("✖ Exit Quiz", key="exit_quiz_results_btn", use_container_width=True):
+                st.session_state.quiz_active    = False
+                st.session_state.quiz_questions = []
+                st.session_state.quiz_index     = 0
+                st.session_state.quiz_score     = 0
+                st.session_state.quiz_answers   = {}
+                st.rerun()
+
+    else:
+        # ── Current question ─────────────────────────────────────────────
+        st.subheader(f"🎮 Interactive Quiz  —  Question {idx + 1} of {total}  |  Score: {score}/{total}")
+        st.progress(int(idx / total * 100))
+        
+        q   = questions[idx]
+        qid = q["id"]
+
+        st.markdown(f"### ❓ {q['question']}")
+        st.markdown("")
+
+        already_answered = qid in st.session_state.quiz_answers
+
+        if not already_answered:
+            if q.get("hint"):
+                with st.expander("💡 Show Hint", expanded=False):
+                    st.info(q["hint"])
+
+            # Show options as clickable buttons
+            option_labels = ["A", "B", "C", "D"]
+            for i, opt in enumerate(q["options"][:4]):
+                label = f"**{option_labels[i]}.** {opt}"
+                if st.button(label, key=f"opt_{qid}_{i}", use_container_width=True):
+                    # Check answer
+                    feedback = _check_answer(q, opt)
+                    if feedback:
+                        is_correct = feedback.get("correct", False)
+                        st.session_state.quiz_answers[qid] = {
+                            "user_answer": opt,
+                            "correct":     is_correct,
+                            "feedback":    feedback,
+                        }
+                        if is_correct:
+                            st.session_state.quiz_score += 1
+                        st.rerun()
+        else:
+            # Show result for this question
+            ans_data = st.session_state.quiz_answers[qid]
+            feedback = ans_data.get("feedback", {})
+
+            if ans_data["correct"]:
+                st.success(f"✅ **{feedback.get('message', 'Correct!')}**")
+                st.info(f"💡 **Explanation:** {feedback.get('explanation', q.get('explanation', ''))}")
+            else:
+                st.error(f"❌ **{feedback.get('message', 'Wrong!')}**")
+                user_ans = ans_data["user_answer"]
+                st.markdown(f"Your answer: ~~{user_ans}~~")
+                st.markdown(f"✅ Correct answer: **{q['correct_answer']}**")
+                st.info(f"📖 **Explanation:** {feedback.get('explanation', q.get('explanation', ''))}")
+
+            st.markdown("")
+            nav_cols = st.columns([1, 1])
+            with nav_cols[0]:
+                if idx > 0 and st.button("← Previous", use_container_width=True):
+                    st.session_state.quiz_index -= 1
+                    st.rerun()
+            with nav_cols[1]:
+                next_label = "Next →" if idx < total - 1 else "See Results 🏁"
+                if st.button(next_label, use_container_width=True, type="primary"):
+                    st.session_state.quiz_index += 1
+                    st.rerun()
+
+    # Block the rest of the page while quiz is active
+    st.stop()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Diagram view (shown as a collapsible section above chat)
+# ══════════════════════════════════════════════════════════════════════════════
+
+if st.session_state.show_diagram and st.session_state.diagram_data:
+    diag = st.session_state.diagram_data
+    with st.expander(f"🗺️ Lecture Diagram: **{diag.get('title', 'Concept Map')}**", expanded=True):
+        mermaid_code = diag.get("content", "")
+
+        # Render Mermaid via an HTML component with Mermaid.js CDN
+        mermaid_html = f"""
+        <div class="mermaid" style="background:#fff; padding:16px; border-radius:8px;">
+        {mermaid_code}
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+        <script>mermaid.initialize({{startOnLoad:true, theme:'default'}});</script>
+        """
+        st.components.v1.html(mermaid_html, height=500, scrolling=True)
+
+        # Show raw Mermaid code toggle
+        if st.checkbox("📋 Show raw Mermaid code", key="show_raw_mermaid"):
+            st.code(mermaid_code, language="text")
+
+        if st.button("✖ Close Diagram", key="close_diag"):
+            st.session_state.show_diagram = False
+            st.rerun()
+
+    st.markdown("---")
+
+# ── Chat input ───────────────────────────────────────────────────────────────
+user_input = st.chat_input(
+    "Ask anything about your lecture…",
+)
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -263,16 +727,22 @@ if user_input:
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("جاري التفكير وصياغة الرد... ⏳"):
-            answer = stream_query(user_input, target_files)
+        answer = _stream_agent_query(
+            query=user_input,
+            asset_ids=selected_asset_ids,
+        )
 
-    st.toast("✅ اكتمل الرد! النظام جاهز لسؤالك التالي.", icon="✅")
-    trace, sources = fetch_trace_and_sources(user_input, target_files)
+    # Fetch citations from the non-streaming endpoint in the background
+    citations = _fetch_citations(
+        query=user_input,
+        asset_ids=selected_asset_ids,
+    )
 
     st.session_state.chat_history.append({
-        "role":        "assistant",
-        "content":     answer,
-        "sources_used": sources,
-        "agent_trace": trace,
+        "role":      "assistant",
+        "content":   answer,
+        "citations": citations,
     })
+
+    st.toast("✅ Response complete!", icon="✅")
     st.rerun()

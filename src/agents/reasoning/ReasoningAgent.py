@@ -152,14 +152,7 @@ class ReasoningAgent(BaseAgent):
         file_texts = state.get("file_texts", [])
         if file_texts:
             parts.append("\n=== 📄 Uploaded File Content ===")
-            if not is_broad_task:
-                parts.append(
-                    "🚨 URGENT Q&A CONSTRAINT: The user is asking a specific question. "
-                    "Scan the following text ONLY to extract the answer. "
-                    "IGNORE everything else. DO NOT summarize the files under any circumstances."
-                )
 
-            # خوارزمية الفرز الذكي: استخراج الكلمات المفتاحية من السؤال (تجاهل الكلمات القصيرة جداً)
             query_terms = set([word for word in query_lower.replace("?", "").replace(".", "").split() if len(word) > 2])
 
             def file_relevance_score(ft):
