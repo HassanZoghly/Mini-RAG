@@ -1,4 +1,7 @@
-from agents.base import BaseAgent, AgentState
+from agents.base import (
+    BaseAgent, AgentState,
+    ROUTE_RETRIEVAL, ROUTE_REASONING, ROUTE_MULTIMODAL, ROUTE_MEMORY, ROUTE_SMALLTALK
+)
 from typing import Dict, Any
 import json
 
@@ -26,7 +29,7 @@ class RouterAgent(BaseAgent):
     * ``needs_vision``  – ``True`` when image paths are present.
     * ``needs_ocr``     – ``True`` when the query suggests OCR extraction.
     * ``needs_memory``  – ``True`` when memory/history keywords are found.
-    * ``route``         – ``"retrieval_only"`` for plain text queries with
+    * ``route``         – ``ROUTE_RETRIEVAL`` for plain text queries with
                         no special requirements.
 
     Parameters
@@ -58,7 +61,7 @@ class RouterAgent(BaseAgent):
         1. Validate that ``query`` is present in *state*.
         2. Call ``_detect_intent`` to determine which capabilities are needed.
         3. Merge the intent flags into ``state["metadata"]``.
-        4. Set ``state["metadata"]["route"] = "retrieval_only"`` when no
+        4. Set ``state["metadata"]["route"] = ROUTE_RETRIEVAL`` when no
            special capability is required.
         5. Append a trace entry describing the routing decision and return
            the updated state.
@@ -84,9 +87,13 @@ class RouterAgent(BaseAgent):
         if image_paths:
             intent["needs_vision"] = True
 
+        # Hard signals should override route to multimodal
+        if intent.get("needs_vision") or state.get("uploaded_files"):
+            intent["route"] = ROUTE_MULTIMODAL
+
         state["metadata"].update(intent)
 
-        route_summary = intent.get("route", "retrieval")
+        route_summary = intent.get("route", ROUTE_RETRIEVAL)
         confidence = intent.get("confidence", 0.0)
 
         state["agent_trace"].append(
@@ -113,6 +120,17 @@ class RouterAgent(BaseAgent):
         normalised = query.lower().strip()
         tokens = set(normalised.split())
 
+        # Cost Optimization: Lightweight pre-routing
+        if normalised in ["hi", "hello", "hey", "thanks", "thank you", "how are you", "how are you?", "good morning", "good evening", "goodbye", "bye"]:
+            self.log_step(f"Pre-routing fast path for trivial query: {normalised}")
+            return {
+                "route": ROUTE_SMALLTALK,
+                "confidence": 1.0,
+                "needs_vision": False,
+                "needs_ocr": False,
+                "needs_memory": False,
+            }
+
         # Check for vision/ocr via heuristics
         needs_ocr = bool(_OCR_KEYWORDS & tokens) or any(
             phrase in normalised for phrase in _OCR_KEYWORDS if " " in phrase
@@ -132,16 +150,16 @@ class RouterAgent(BaseAgent):
             "You are an intent classification system for an educational AI Assistant (RAG application).\n"
             "You MUST prioritize educational and lecture-related requests over casual conversation.\n"
             "Classify the following user query into exactly ONE of these categories:\n\n"
-            "- retrieval: (Priority) Queries asking to summarize a lecture, explain a topic, generate a quiz, create MCQs, define a concept, or answer a factual question. (e.g. 'summarize this', 'what is bagging?', 'generate a quiz')\n"
-            "- reasoning: Complex comparative or analytical educational questions. (e.g. 'compare boosting and bagging')\n"
-            "- multimodal: Questions specifically asking to explain or analyze an attached image.\n"
-            "- memory: Questions asking about previous conversation history. (e.g. 'what did I just ask?')\n"
-            "- small_talk: (Lowest Priority) Simple greetings or casual social chatter with NO educational request. (e.g. 'hi', 'hello', 'thanks', 'how are you?')\n\n"
+            f"- {ROUTE_RETRIEVAL}: (Priority) Queries asking to summarize a lecture, explain a topic, generate a quiz, create MCQs, define a concept, or answer a factual question. (e.g. 'summarize this', 'what is bagging?', 'generate a quiz')\n"
+            f"- {ROUTE_REASONING}: Complex comparative or analytical educational questions. (e.g. 'compare boosting and bagging')\n"
+            f"- {ROUTE_MULTIMODAL}: Questions specifically asking to explain or analyze an attached image.\n"
+            f"- {ROUTE_MEMORY}: Questions asking about previous conversation history. (e.g. 'what did I just ask?')\n"
+            f"- {ROUTE_SMALLTALK}: (Lowest Priority) Simple greetings or casual social chatter with NO educational request. (e.g. 'hi', 'hello', 'thanks', 'how are you?')\n\n"
             "Return ONLY a valid JSON object matching this schema:\n"
             '{"intent": "category_name", "confidence": 0.95}'
         )
 
-        detected_category = "retrieval"
+        detected_category = ROUTE_RETRIEVAL
         confidence = 0.0
 
         try:
@@ -163,30 +181,38 @@ class RouterAgent(BaseAgent):
             clean_json = clean_json.strip()
 
             parsed = json.loads(clean_json)
-            detected_category = parsed.get("intent", "retrieval").strip().lower()
+            detected_category = parsed.get("intent", ROUTE_RETRIEVAL).strip().lower()
+            
+            # Translate legacy string if LLM returns it
+            if detected_category == "small_talk":
+                detected_category = ROUTE_SMALLTALK
+
             confidence = float(parsed.get("confidence", 0.0))
 
             self.log_step(f"LLM intent output: {parsed}")
         except Exception as exc:
             self.log_step(f"JSON intent detection failed or parsing error: {exc}. Defaulting to retrieval.")
-            detected_category = "retrieval"
+            detected_category = ROUTE_RETRIEVAL
             confidence = 0.0
 
         # Enforce Minimum Confidence Threshold
         MIN_CONFIDENCE = 0.70
         if confidence < MIN_CONFIDENCE:
-            self.log_step(f"Confidence {confidence:.2f} < {MIN_CONFIDENCE}. Fallback to retrieval.")
-            detected_category = "retrieval"
+            if detected_category != ROUTE_MULTIMODAL:
+                self.log_step(f"Confidence {confidence:.2f} < {MIN_CONFIDENCE}. Fallback to retrieval.")
+                detected_category = ROUTE_RETRIEVAL
+            else:
+                self.log_step(f"Confidence {confidence:.2f} < {MIN_CONFIDENCE} but preserving multimodal intent.")
 
         # Map to valid routes
-        valid_routes = {"small_talk", "retrieval", "memory", "multimodal", "reasoning"}
+        valid_routes = {ROUTE_SMALLTALK, ROUTE_RETRIEVAL, ROUTE_MEMORY, ROUTE_MULTIMODAL, ROUTE_REASONING}
         if detected_category not in valid_routes:
-            detected_category = "retrieval"
+            detected_category = ROUTE_RETRIEVAL
 
         return {
             "route": detected_category,
             "confidence": confidence,
             "needs_vision": False,
-            "needs_ocr": needs_ocr or detected_category == "multimodal",
-            "needs_memory": needs_memory or detected_category == "memory",
+            "needs_ocr": needs_ocr or detected_category == ROUTE_MULTIMODAL,
+            "needs_memory": needs_memory or detected_category == ROUTE_MEMORY,
         }

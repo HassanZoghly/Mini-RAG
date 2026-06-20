@@ -1,0 +1,57 @@
+import re, os
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import List
+
+class Settings(BaseSettings):
+
+    APP_NAME: str
+    APP_ENV: str
+
+    FILE_ALLOWED_TYPES: List[str]
+    FILE_MAX_SIZE: int
+    FILE_DEFAULT_CHUNK: int
+
+    POSTGRES_USERNAME: str
+    POSTGRES_PASSWORD: str
+    POSTGRES_HOST: str
+    POSTGRES_PORT: int
+    POSTGRES_MAIN_DATABASE: str
+
+    GENERATION_BACKEND: str
+    EMBEDDING_BACKEND: str
+    RERANKER_BACKEND: str
+
+    OPENAI_API_KEY: str = None
+    OPENAI_API_URL: str = None
+    COHERE_API_KEY: str = None
+
+    GENERATION_MODEL_ID_LITERAL: List[str] = None
+    GENERATION_MODEL_ID: str = None
+    EMBEDDING_MODEL_ID: str = None
+    RERANKER_MODEL_ID: str = None
+    EMBEDDING_MODEL_SIZE: int = None
+    INPUT_DAFAULT_MAX_CHARACTERS: int = None
+    GENERATION_DAFAULT_MAX_TOKENS: int = None
+    GENERATION_DAFAULT_TEMPERATURE: float = None
+
+    VECTOR_DB_BACKEND_LITERAL: List[str] = None
+    VECTOR_DB_BACKEND: str = None
+    VECTOR_DB_PATH: str
+    VECTOR_DB_DISTANCE_METHOD: str
+    VECTOR_DB_PGVEC_INDEX_THRESHOLD: int = 100
+
+    REDIS_PORT: str = os.getenv("REDIS_PORT", "6379")
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    DEBUG_MODE: bool = os.getenv("DEBUG_MODE", "false").lower() == "true"
+
+    PRIMARY_LANG: str = "en"
+    DEFAULT_LANG: str = "en"
+
+    NAPKIN_API_KEY: str = None
+
+    class Config:
+        env_file = ".env"
+
+def get_settings():
+    return Settings()

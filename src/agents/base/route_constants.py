@@ -1,0 +1,5 @@
+ROUTE_RETRIEVAL = "retrieval"
+ROUTE_REASONING = "reasoning"
+ROUTE_MULTIMODAL = "multimodal"
+ROUTE_MEMORY = "memory"
+ROUTE_SMALLTALK = "smalltalk"

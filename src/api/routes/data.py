@@ -33,8 +33,12 @@ import aiofiles
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
-from controllers import DataController, NLPController, ProcessController, ProjectController
-from helpers.config import Settings, get_settings
+from core.exceptions import ValidationException, ProcessingException
+from services.data_service import DataService
+from services.nlp_service import NLPService
+from services.document_service import DocumentService
+from services.project_service import ProjectService
+from core.settings import Settings, get_settings
 from models import ResponseSignal
 from models.AssetModel import AssetModel
 from models.ChunkModel import ChunkModel
@@ -64,17 +68,17 @@ async def upload_data(
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
 
-    data_controller = DataController()
-    is_valid, result_signal = data_controller.validate_uploaded_file(file=file)
+    data_service = DataService()
+    is_valid, result_signal = data_service.validate_uploaded_file(file=file)
 
     if not is_valid:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"signal": result_signal},
+        raise ValidationException(
+            message="File validation failed.",
+            details={"signal": result_signal}
         )
 
-    ProjectController().get_project_path(project_id=project_id)
-    file_path, file_id = data_controller.generate_unique_filepath(
+    ProjectService().get_project_path(project_id=project_id)
+    file_path, file_id = data_service.generate_unique_filepath(
         orig_file_name=file.filename,
         project_id=project_id,
     )
@@ -85,9 +89,9 @@ async def upload_data(
                 await f.write(chunk)
     except Exception as exc:
         logger.error(f"Error while uploading file: {exc}")
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"signal": ResponseSignal.FILE_UPLOAD_FAILED.value},
+        raise ProcessingException(
+            message="Error while uploading file.",
+            details={"signal": ResponseSignal.FILE_UPLOAD_FAILED.value}
         )
 
     asset_model = await AssetModel.create_instance(db_client=request.app.db_client)
@@ -147,7 +151,7 @@ async def _run_process_and_index(
         asset_model = await AssetModel.create_instance(db_client=db_client)
         chunk_model = await ChunkModel.create_instance(db_client=db_client)
 
-        nlp_controller = NLPController(
+        nlp_service = NLPService(
             vectordb_client=vectordb_client,
             generation_client=generation_client,
             embedding_client=embedding_client,
@@ -184,11 +188,11 @@ async def _run_process_and_index(
 
         # ── Optional reset ────────────────────────────────────────────────
         if process_request.do_reset == 1:
-            collection_name = nlp_controller.create_collection_name(project_id=project.project_id)
+            collection_name = nlp_service.create_collection_name(project_id=project.project_id)
             await vectordb_client.delete_collection(collection_name=collection_name)
             await chunk_model.delete_chunks_by_project_id(project_id=project.project_id)
 
-        process_controller = ProcessController(project_id=project_id)
+        document_service = DocumentService(project_id=project_id)
         total_files = len(project_files_ids)
         no_records = 0
         no_files = 0
@@ -204,7 +208,7 @@ async def _run_process_and_index(
             )
             # Offload blocking I/O to the thread pool so the event loop stays free.
             file_content = await asyncio.get_event_loop().run_in_executor(
-                None, process_controller.get_file_content, file_id
+                None, document_service.get_file_content, file_id
             )
 
             if file_content is None:
@@ -218,7 +222,7 @@ async def _run_process_and_index(
             )
             file_chunks = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda fc=file_content, fi=file_id: process_controller.process_file_content(
+                lambda fc=file_content, fi=file_id: document_service.process_file_content(
                     file_content=fc,
                     file_id=fi,
                     chunk_size=process_request.chunk_size,
@@ -266,7 +270,7 @@ async def _run_process_and_index(
                 detail=f"Generating embeddings for {file_label} ({len(saved_chunk_list)} chunks)…",
             )
             vectors = await asyncio.get_event_loop().run_in_executor(
-                None, nlp_controller.embed_chunks, saved_chunk_list
+                None, nlp_service.embed_chunks, saved_chunk_list
             )
 
             # ── INDEXING ────────────────────────────────────────────────
@@ -274,7 +278,7 @@ async def _run_process_and_index(
                 pid, ProcessingStatus.INDEXING,
                 detail=f"Inserting vectors for {file_label} into vector DB…",
             )
-            await nlp_controller.insert_chunks_into_vector_db(
+            await nlp_service.insert_chunks_into_vector_db(
                 project=project,
                 chunks=saved_chunk_list,
                 chunks_ids=chunks_ids,

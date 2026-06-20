@@ -112,10 +112,11 @@ class RetrievalAgent(BaseAgent):
                 text=retrieval_query,
                 document_type=DocumentTypeEnum.QUERY.value,
             )
-            query_vector = self._nlp_controller._flatten_vector(raw_vec)
+            query_vector = self._nlp_controller.flatten_vector(raw_vec)
         except Exception as exc:
             self.log_step(f"embedding failed: {exc}")
             state["retrieved_chunks"] = []
+            state["metadata"]["retrieval_quality"] = "EMPTY"
             state["agent_trace"].append(
                 f"{self.agent_name}: embedding failed — 0 chunks"
             )
@@ -123,6 +124,7 @@ class RetrievalAgent(BaseAgent):
 
         if not any(query_vector):
             state["retrieved_chunks"] = []
+            state["metadata"]["retrieval_quality"] = "EMPTY"
             state["agent_trace"].append(
                 f"{self.agent_name}: empty query vector — 0 chunks"
             )
@@ -177,12 +179,11 @@ class RetrievalAgent(BaseAgent):
                     documents=docs_texts,
                     top_n=top_n,
                 )
+                lookup = {chunk["text"]: chunk for chunk in chunks}
                 reranked: List[dict] = []
                 for r_text in ranked_texts:
-                    for c in chunks:
-                        if c["text"] == r_text and c not in reranked:
-                            reranked.append(c)
-                            break
+                    if r_text in lookup and lookup[r_text] not in reranked:
+                        reranked.append(lookup[r_text])
                 chunks = reranked
             except Exception as exc:
                 self.log_step(f"reranking failed ({exc}), using top-{top_n} by score")

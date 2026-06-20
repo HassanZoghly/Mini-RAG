@@ -1,5 +1,5 @@
-from controllers.NLPController import NLPController as _NLPController
-from controllers.ProcessController import ProcessController as _ProcessController
+from services.nlp_service import NLPService as _NLPService
+from services.document_service import DocumentService as _DocumentService
 
 from agents.graph.AgentGraph import AgentGraph
 from agents.router.RouterAgent import RouterAgent
@@ -58,20 +58,20 @@ class GraphFactory:
         db_client         = app.db_client
         reranker_client   = app.reranker_client
 
-        # NLPController — shared helper for _flatten_vector and collection naming
-        nlp_controller = _NLPController(
+        # NLPService — shared helper for _flatten_vector and collection naming
+        nlp_service = _NLPService(
             vectordb_client=vectordb_client,
             generation_client=generation_client,
             embedding_client=embedding_client,
             template_parser=template_parser,
         )
 
-        # ProcessController — used by OCRAgent for image pre-processing
-        process_controller = _ProcessController(project_id="")
+        # DocumentService — used by OCRAgent for image pre-processing
+        document_service = _DocumentService(project_id="")
 
         # MemoryStore — semantic memory backed by pgvector
         memory_store = MemoryStore(
-            nlp_controller=nlp_controller,
+            nlp_controller=nlp_service,
             async_session_maker=db_client,
         )
 
@@ -85,7 +85,7 @@ class GraphFactory:
         retrieval_agent = RetrievalAgent(
             embedding_client=embedding_client,
             vectordb_client=vectordb_client,
-            nlp_controller=nlp_controller,
+            nlp_controller=nlp_service,
             reranker_client=reranker_client,
             db_client=db_client,
         )
@@ -101,7 +101,7 @@ class GraphFactory:
         )
 
         ocr_agent = OCRAgent(
-            process_controller=process_controller,
+            process_controller=document_service,
         )
 
         vision_agent = VisionAgent(

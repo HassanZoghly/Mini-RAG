@@ -37,6 +37,7 @@ from agents.retrieval.QueryRewriterAgent import QueryRewriterAgent
 from agents.retrieval.RetrievalAgent import RetrievalAgent
 from agents.router.RouterAgent import RouterAgent
 from agents.smalltalk.SmallTalkAgent import SmallTalkAgent
+from agents.base.route_constants import ROUTE_SMALLTALK, ROUTE_RETRIEVAL
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +53,8 @@ def _route_after_router(state: AgentState) -> str:
     queries) goes to memory first so ``QueryRewriterAgent`` can use
     recent history.
     """
-    route = state.get("metadata", {}).get("route", "retrieval")
-    if route == "small_talk":
+    route = state.get("metadata", {}).get("route", ROUTE_RETRIEVAL)
+    if route == ROUTE_SMALLTALK:
         return "smalltalk"
     return "memory"
 
@@ -72,8 +73,8 @@ def _route_after_memory(state: AgentState) -> str:
 
 def _route_decision_multimodal(state: AgentState) -> str:
     """Routing for the multimodal graph after ``RouterAgent``."""
-    route = state.get("metadata", {}).get("route", "retrieval")
-    if route == "small_talk":
+    route = state.get("metadata", {}).get("route", ROUTE_RETRIEVAL)
+    if route == ROUTE_SMALLTALK:
         return "smalltalk"
     return "memory"
 

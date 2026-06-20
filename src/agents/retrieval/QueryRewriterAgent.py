@@ -74,9 +74,20 @@ class QueryRewriterAgent(BaseAgent):
             )
             return state
 
+        def get_timestamp(mem):
+            import datetime
+            ts = mem.get("timestamp")
+            if not ts:
+                return datetime.datetime.min.isoformat()
+            return ts
+            
+        sorted_memories = sorted(memory_context, key=get_timestamp, reverse=True)
+        recent_memories = sorted_memories[:3]
+        recent_memories.sort(key=get_timestamp)
+        
         history_text = "\n".join(
             mem.get("content", "").strip()
-            for mem in memory_context[:3]
+            for mem in recent_memories
             if mem.get("content", "").strip()
         )
 

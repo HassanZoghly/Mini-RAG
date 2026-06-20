@@ -12,9 +12,8 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_community.document_loaders import TextLoader
 
 from models import ProcessingEnum
-
-from .BaseController import BaseController
-from .ProjectController import ProjectController
+from services.project_service import ProjectService
+from utils.tokenizer import count_tokens
 from utils.tokenizer import count_tokens
 
 import pytesseract
@@ -28,7 +27,7 @@ class Document:
     metadata: dict
 
 
-class ProcessController(BaseController):
+class DocumentService:
 
     # ── file-type registries ──────────────────────────────────
     IMAGE_EXTENSIONS  = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".gif"}
@@ -36,10 +35,8 @@ class ProcessController(BaseController):
     PDF_EXTENSION     = ".pdf"
 
     def __init__(self, project_id: str):
-        super().__init__()
-
         self.project_id = project_id
-        self.project_path = ProjectController().get_project_path(project_id=project_id)
+        self.project_path = ProjectService().get_project_path(project_id=project_id)
 
     # ─────────────────────────────────────────────────────────
     # existing helpers (unchanged)

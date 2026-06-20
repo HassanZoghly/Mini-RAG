@@ -1,16 +1,16 @@
 from fastapi import FastAPI, APIRouter, status, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
-from routes.schemes.nlp import (
+from .schemes.nlp import (
     PushRequest, SearchRequest, VisualizeRequest,
     AgentQueryRequest, AgentQueryResponse, MultimodalQueryResponse,
     SummaryRequest,
 )
 from agents.base import create_initial_state
-from helpers.config import get_settings
+from core.settings import get_settings
 import json
 from models.ProjectModel import ProjectModel
 from models.ChunkModel import ChunkModel
-from controllers import NLPController
+from services.nlp_service import NLPService
 from models import ResponseSignal
 from tqdm.auto import tqdm
 import os
@@ -52,7 +52,7 @@ async def index_project(request: Request, project_id: str, push_request: PushReq
             }
         )
 
-    nlp_controller = NLPController(
+    nlp_service = NLPService(
         vectordb_client=request.app.vectordb_client,
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
@@ -65,7 +65,7 @@ async def index_project(request: Request, project_id: str, push_request: PushReq
     idx = 0
 
     # create collection if not exists
-    collection_name = nlp_controller.create_collection_name(project_id=project.project_id)
+    collection_name = nlp_service.create_collection_name(project_id=project.project_id)
 
     _ = await request.app.vectordb_client.create_collection(
         collection_name=collection_name,
@@ -89,7 +89,7 @@ async def index_project(request: Request, project_id: str, push_request: PushReq
         chunks_ids =  [ c.chunk_id for c in page_chunks ]
         idx += len(page_chunks)
 
-        is_inserted = await nlp_controller.index_into_vector_db(
+        is_inserted = await nlp_service.index_into_vector_db(
             project=project,
             chunks=page_chunks,
             chunks_ids=chunks_ids
@@ -126,14 +126,14 @@ async def get_project_index_info(request: Request, project_id: str):
         project_id=project_id
     )
 
-    nlp_controller = NLPController(
+    nlp_service = NLPService(
         vectordb_client=request.app.vectordb_client,
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
         template_parser=request.app.template_parser,
     )
 
-    collection_info = await nlp_controller.get_vector_db_collection_info(project=project)
+    collection_info = await nlp_service.get_vector_db_collection_info(project=project)
 
     return JSONResponse(
         content={
@@ -153,14 +153,14 @@ async def search_index(request: Request, project_id: str, search_request: Search
         project_id=project_id
     )
 
-    nlp_controller = NLPController(
+    nlp_service = NLPService(
         vectordb_client=request.app.vectordb_client,
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
         template_parser=request.app.template_parser,
     )
 
-    results = await nlp_controller.search_vector_db_collection(
+    results = await nlp_service.search_vector_db_collection(
         project=project, text=search_request.text, limit=search_request.limit
     )
 
@@ -190,14 +190,14 @@ async def answer_rag(request: Request, project_id: str, search_request: SearchRe
         project_id=project_id
     )
 
-    nlp_controller = NLPController(
+    nlp_service = NLPService(
         vectordb_client=request.app.vectordb_client,
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
         template_parser=request.app.template_parser,
     )
 
-    answer, full_prompt, chat_history = await nlp_controller.answer_rag_question(
+    answer, full_prompt, chat_history = await nlp_service.answer_rag_question(
         project=project,
         query=search_request.text,
         limit=search_request.limit,
@@ -330,14 +330,14 @@ async def get_quiz(request: Request, project_id: str):
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
 
-    nlp_controller = NLPController(
+    nlp_service = NLPService(
         vectordb_client=request.app.vectordb_client,
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
         template_parser=request.app.template_parser,
     )
 
-    quiz = await nlp_controller.generate_quiz(project=project)
+    quiz = await nlp_service.generate_quiz(project=project)
 
     if not quiz:
         return JSONResponse(status_code=400, content={"signal": "quiz_error"})
@@ -365,7 +365,7 @@ async def get_summary(request: Request, project_id: str, summary_request: Summar
 
     chunk_model = await ChunkModel.create_instance(db_client=request.app.db_client)
 
-    nlp_controller = NLPController(
+    nlp_service = NLPService(
         vectordb_client=request.app.vectordb_client,
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
@@ -373,7 +373,7 @@ async def get_summary(request: Request, project_id: str, summary_request: Summar
     )
 
     return StreamingResponse(
-        nlp_controller.generate_summary_stream(
+        nlp_service.generate_summary_stream(
             project=project,
             chunk_model=chunk_model,
             asset_ids=summary_request.asset_ids or [],
@@ -388,7 +388,7 @@ async def answer_rag_stream(request: Request, project_id: str, search_request: S
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_project_or_create_one(project_id=project_id)
 
-    nlp_controller = NLPController(
+    nlp_service = NLPService(
         vectordb_client=request.app.vectordb_client,
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
@@ -396,7 +396,7 @@ async def answer_rag_stream(request: Request, project_id: str, search_request: S
     )
 
     return StreamingResponse(
-        nlp_controller.answer_rag_question_stream(project=project, query=search_request.text, limit=search_request.limit),
+        nlp_service.answer_rag_question_stream(project=project, query=search_request.text, limit=search_request.limit),
         media_type="text/event-stream"
     )
 

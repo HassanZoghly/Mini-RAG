@@ -1,14 +1,12 @@
-from .BaseController import BaseController
 from models.db_schemes import Project, DataChunk
 from stores.llm.LLMEnums import DocumentTypeEnum
 from typing import List
 import json
 
-class NLPController(BaseController):
+class NLPService:
 
     def __init__(self, vectordb_client, generation_client,
                  embedding_client, template_parser):
-        super().__init__()
         self.vectordb_client = vectordb_client
         self.generation_client = generation_client
         self.embedding_client = embedding_client
@@ -26,7 +24,7 @@ class NLPController(BaseController):
         collection_info = await self.vectordb_client.get_collection_info(collection_name=collection_name)
         return json.loads(json.dumps(collection_info, default=lambda x: x.__dict__))
 
-    def _flatten_vector(self, raw_vec):
+    def flatten_vector(self, raw_vec):
         flat_floats = []
         def recurse(item):
             if isinstance(item, (list, tuple)):
@@ -81,7 +79,7 @@ class NLPController(BaseController):
         vectors = []
         for text in texts:
             raw_vec = self.embedding_client.embed_text(text=text, document_type=DocumentTypeEnum.DOCUMENT.value)
-            flat_vec = self._flatten_vector(raw_vec)
+            flat_vec = self.flatten_vector(raw_vec)
             vectors.append(flat_vec)
 
         return vectors
@@ -119,7 +117,7 @@ class NLPController(BaseController):
         collection_name = self.create_collection_name(project_id=project.project_id)
         raw_vec = self.embedding_client.embed_text(text=text, document_type=DocumentTypeEnum.QUERY.value)
 
-        query_vector = self._flatten_vector(raw_vec)
+        query_vector = self.flatten_vector(raw_vec)
 
         if not any(query_vector):
             return False

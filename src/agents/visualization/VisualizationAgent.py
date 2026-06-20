@@ -47,7 +47,7 @@ class VisualizationAgent:
         if self._loaded:
             return
         try:
-            from helpers.config import get_settings
+            from core.settings import get_settings
             settings = get_settings()
             self._api_key = getattr(settings, "NAPKIN_API_KEY", None)
         except Exception as exc:

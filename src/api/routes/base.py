@@ -1,6 +1,6 @@
 from fastapi import APIRouter, FastAPI, Depends
 import os
-from helpers.config import get_settings, Settings
+from core.settings import get_settings, Settings
 
 base_router = APIRouter(
     prefix="/v1" # All routes in this router will be prefixed with /v1

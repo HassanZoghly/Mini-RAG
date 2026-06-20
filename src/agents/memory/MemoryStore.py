@@ -19,7 +19,7 @@ from typing import List, Optional
 
 from sqlalchemy import select
 
-from controllers.NLPController import NLPController
+from services.nlp_service import NLPService
 from models.db_schemes.minirag.schemes.memory import MemoryModel
 from stores.llm.LLMEnums import DocumentTypeEnum
 
@@ -51,14 +51,14 @@ class MemoryStore:
             text=text,
             document_type=DocumentTypeEnum.DOCUMENT.value,
         )
-        return self._nlp._flatten_vector(raw)
+        return self._nlp.flatten_vector(raw)
 
     def _embed_query(self, text: str) -> List[float]:
         raw = self._nlp.embedding_client.embed_text(
             text=text,
             document_type=DocumentTypeEnum.QUERY.value,
         )
-        return self._nlp._flatten_vector(raw)
+        return self._nlp.flatten_vector(raw)
 
     # ------------------------------------------------------------------
     # Core store / retrieve (unchanged)

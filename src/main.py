@@ -1,12 +1,13 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from routes import base, data, nlp
-from routes.quiz import quiz_router
-from routes.diagram import diagram_router
-from helpers.config import get_settings
+from api.routes import base, data, nlp
+from api.routes.quiz import quiz_router
+from api.routes.diagram import diagram_router
+from core.settings import get_settings
 from stores.llm.LLMProviderFactory import LLMProviderFactory
 from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
 from stores.llm.templates.template_parser import TemplateParser
+from core.exceptions import AppException, app_exception_handler, global_exception_handler
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from agents.graph.GraphFactory import GraphFactory
@@ -64,6 +65,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Register exception handlers
+app.add_exception_handler(AppException, app_exception_handler)
+app.add_exception_handler(Exception, global_exception_handler)
 
 # Setup Prometheus metrics
 setup_metrics(app)

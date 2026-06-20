@@ -2,7 +2,7 @@ import pytesseract
 from PIL import Image
 
 from agents.base import BaseAgent, AgentState
-from controllers.ProcessController import ProcessController
+from services.document_service import DocumentService
 
 
 class OCRAgent(BaseAgent):
@@ -23,7 +23,7 @@ class OCRAgent(BaseAgent):
         reused here; no second import of the library is needed.
     """
 
-    def __init__(self, process_controller: ProcessController) -> None:
+    def __init__(self, process_controller: DocumentService) -> None:
         self._process_controller = process_controller
 
     # ------------------------------------------------------------------

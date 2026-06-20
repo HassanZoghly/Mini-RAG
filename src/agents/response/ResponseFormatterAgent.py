@@ -295,6 +295,22 @@ class ResponseFormatterAgent(BaseAgent):
         # ── Assemble final prompt ────────────────────────────────────────
         ref_section = reasoning_context if reasoning_context else ""
         
+        if task_type == TASK_FULL_EXPLAIN:
+            instruction = (
+                "**TASK: EXPLAIN THIS LECTURE — full walkthrough mode.**\n"
+                "Do NOT treat this as a Q&A question.\n"
+                "Follow SECTION 2 of your system prompt exactly:\n"
+                "  1. Opening sentence.\n"
+                "  2. One '## Heading' per major concept, in lecture order, with transition phrases.\n"
+                "  3. '## Key Takeaways' section at the end with 4–6 bullets.\n"
+                "Walk through EVERY concept in the order it appears in the Reference Material below."
+            )
+            full_prompt = (
+                f"{instruction}\n\n"
+                f"---\n## Lecture Content (in order):\n\n{ref_section}"
+            )
+            return full_prompt, chat_history
+
         if task_type in (TASK_EXPLANATION, TASK_SIMPLE_QA):
             history_lines = []
             for mem in state.get("memory_context", []):

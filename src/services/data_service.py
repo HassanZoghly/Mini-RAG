@@ -1,12 +1,14 @@
 from fastapi import UploadFile
-from .BaseController import BaseController
-from .ProjectController import ProjectController
 from models import ResponseSignal
 import re
 import os
 import json
+import random
+import string
+from core.settings import get_settings
+from services.project_service import ProjectService
 
-class DataController(BaseController):
+class DataService:
 
     ALLOWED_EXTENSIONS = {
         ".pdf",
@@ -15,8 +17,11 @@ class DataController(BaseController):
     }
 
     def __init__(self):
-        super().__init__()
+        self.app_settings = get_settings()
         self.size_scale = 1048576 # Convert MB to bytes
+
+    def generate_random_string(self, length=12):
+        return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
     def validate_uploaded_file(self, file: UploadFile):
         allowed_types = self.app_settings.FILE_ALLOWED_TYPES
@@ -43,7 +48,7 @@ class DataController(BaseController):
 
     def generate_unique_filepath(self, orig_file_name: str, project_id: str):
         random_key = self.generate_random_string()
-        project_path = ProjectController().get_project_path(project_id=project_id)
+        project_path = ProjectService().get_project_path(project_id=project_id)
 
         cleaned_filename = self.get_clean_filename(orig_file_name=orig_file_name)
         new_file_path = os.path.join(
@@ -59,7 +64,6 @@ class DataController(BaseController):
             )
 
         return new_file_path, random_key + "_" + cleaned_filename
-
 
     def get_clean_filename(self, orig_file_name: str):
         Cleaned_filename = re.sub(r'[^\w.]', '', (orig_file_name or "").strip())

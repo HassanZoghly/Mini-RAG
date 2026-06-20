@@ -59,7 +59,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from agents.quiz.QuizAgent import QuizAgent
-from controllers.NLPController import NLPController
+
 from models.ChunkModel import ChunkModel
 from models.ProjectModel import ProjectModel
 

@@ -1,17 +1,17 @@
 from .providers import QdrantDBProvider, PGVectorProvider
 from .VectorDBEnums import VectorDBEnums
-from controllers.BaseController import BaseController
+from services.project_service import ProjectService
 from sqlalchemy.orm import sessionmaker
 
 class VectorDBProviderFactory:
     def __init__(self, config, db_client: sessionmaker=None):
         self.config = config
-        self.base_controller = BaseController()
+        self.project_service = ProjectService()
         self.db_client = db_client
 
     def create(self, provider: str):
         if provider == VectorDBEnums.QDRANT.value:
-            qdrant_db_client = self.base_controller.get_database_path(db_name=self.config.VECTOR_DB_PATH)
+            qdrant_db_client = self.project_service.get_database_path(db_name=self.config.VECTOR_DB_PATH)
 
             return QdrantDBProvider(
                 db_client=qdrant_db_client,
