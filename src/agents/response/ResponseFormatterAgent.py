@@ -159,7 +159,6 @@ class ResponseFormatterAgent(BaseAgent):
         query_lower = query.lower().strip()
         route = state.get("metadata", {}).get("route", "")
         task_type = classify_task_type(query, route)
-        teaching_mode: str = state.get("teaching_mode", "")
 
         # Detect language
         is_arabic = any("\u0600" <= c <= "\u06FF" for c in query) or \
@@ -184,11 +183,6 @@ class ResponseFormatterAgent(BaseAgent):
         # Fallback if templates are missing
         if not system_prompt:
             system_prompt = "You are a helpful AI assistant."
-
-        # Teaching-mode modifier
-        teaching_block = self._get_teaching_mode_block(teaching_mode, lang_code)
-        if teaching_block:
-            system_prompt = f"{system_prompt}\n\n{teaching_block}"
 
         chat_history = [
             self._llm.construct_prompt(
@@ -216,20 +210,6 @@ class ResponseFormatterAgent(BaseAgent):
             f"---\n## Reference Material:\n\n{ref_section}"
         )
         return full_prompt, chat_history
-
-    # ------------------------------------------------------------------
-    # Teaching-mode block
-    # ------------------------------------------------------------------
-    def _get_teaching_mode_block(self, teaching_mode: str, lang_code: str) -> str:
-        if not teaching_mode:
-            return ""
-        mode = teaching_mode.strip().lower()
-        self._template_parser.set_language(lang_code)
-        
-        # Fetch directly from template registry
-        template_name = f"teaching_mode_{mode}"
-        result = self._template_parser.get("rag", template_name)
-        return result if result else ""
 
     # ------------------------------------------------------------------
     # Sources / citations block
