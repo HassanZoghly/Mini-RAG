@@ -127,26 +127,12 @@ class RouterAgent(BaseAgent):
             )
         )
 
-        # Attempt JSON-Based LLM Intent Detection
-        system_prompt = (
-            "You are an intent classification system for an educational AI Assistant (RAG application).\n"
-            "You MUST prioritize educational and lecture-related requests over casual conversation.\n"
-            "Classify the following user query into exactly ONE of these categories:\n\n"
-            "- retrieval: (Priority) Queries asking to summarize a lecture, explain a topic, generate a quiz, create MCQs, define a concept, or answer a factual question. (e.g. 'summarize this', 'what is bagging?', 'generate a quiz')\n"
-            "- reasoning: Complex comparative or analytical educational questions. (e.g. 'compare boosting and bagging')\n"
-            "- multimodal: Questions specifically asking to explain or analyze an attached image.\n"
-            "- memory: Questions asking about previous conversation history. (e.g. 'what did I just ask?')\n"
-            "- small_talk: (Lowest Priority) Simple greetings or casual social chatter with NO educational request. (e.g. 'hi', 'hello', 'thanks', 'how are you?')\n\n"
-            "Return ONLY a valid JSON object matching this schema:\n"
-            '{"intent": "category_name", "confidence": 0.95}'
-        )
-
-        detected_category = "retrieval"
-        confidence = 0.0
+        system_prompt = self._template_parser.get("rag", "router_system_prompt")
+        user_prompt = self._template_parser.get("rag", "router_user_prompt", {"query": query})
 
         try:
             llm_response = self._llm_provider.generate_text(
-                prompt=f"Query: {query}\n\nRespond with strictly valid JSON only.",
+                prompt=user_prompt,
                 chat_history=[
                     self._llm_provider.construct_prompt(prompt=system_prompt, role=self._llm_provider.enums.SYSTEM.value)
                 ]

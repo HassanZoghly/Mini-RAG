@@ -8,15 +8,15 @@ class VisionAgent(BaseAgent):
     Processes both direct image uploads and images extracted from scanned PDFs.
     """
 
-    def __init__(self, llm_provider) -> None:
+    def __init__(self, llm_provider,template_parser) -> None:
         self._llm = llm_provider
+        self._template_parser = template_parser
 
     @property
     def agent_name(self) -> str:
         return "VisionAgent"
 
     async def execute(self, state: AgentState) -> AgentState:
-        # 🔥 قراءة الصور سواء كانت مرفوعة مباشرة أو مستخرجة من PDF
         image_base64_list = state.get("image_base64", [])
         query: str = state.get("query", "")
 
@@ -29,14 +29,7 @@ class VisionAgent(BaseAgent):
         if self._supports_vision(self._llm):
             descriptions = []
 
-            # 🔥 Prompt أكاديمي لاستخراج النصوص وفهم المخططات (بدلاً من مجرد الوصف)
-            prompt = (
-                "You are an expert academic AI assistant analyzing a lecture slide or document page.\n"
-                "1. Extract ALL visible text with high accuracy.\n"
-                "2. If there are diagrams, flowcharts, tables, or mathematical equations, explain them in detailed steps.\n"
-                "3. Ensure the output is highly structured and useful for summarizing the lecture material.\n"
-                f"User context/query: {query}"
-            )
+            prompt = self._template_parser.get("rag", "vision_system_prompt", {"query": query})
 
             for img_dict in image_base64_list:
                 try:

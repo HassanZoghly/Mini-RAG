@@ -101,6 +101,7 @@ class GraphFactory:
 
         vision_agent = VisionAgent(
             llm_provider=generation_client,
+            template_parser=template_parser,
         )
 
         reasoning_agent = ReasoningAgent(
@@ -115,6 +116,7 @@ class GraphFactory:
 
         smalltalk_agent = SmallTalkAgent(
             llm_provider=generation_client,
+            template_parser=template_parser,
         )
 
         return AgentGraph(

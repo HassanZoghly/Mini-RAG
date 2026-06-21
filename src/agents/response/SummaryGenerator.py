@@ -295,13 +295,7 @@ class SummaryGenerator:
         than one pass).
         """
         system_prompt = self._get_prompt("summary_batch_system_prompt")
-        prompt = (
-            "You are merging two sets of detailed lecture notes into one combined set.\n"
-            "Preserve ALL content — do not drop any definitions, formulas, or steps.\n"
-            "Remove duplicate paragraphs only.\n\n"
-            f"{notes_text}\n\n"
-            "Merged notes:"
-        )
+        prompt = self._get_prompt("summary_intermediate_merge_prompt", {"notes_text": notes_text})
         chat_history = [
             self._llm.construct_prompt(
                 prompt=system_prompt or "You are a careful note-merger.",

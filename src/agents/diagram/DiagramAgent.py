@@ -131,47 +131,17 @@ class DiagramAgent:
         Run a concept-extraction prompt over each batch, collecting
         bullet-point concept/relationship lists.
         """
-        if self._language == "ar":
-            system = (
-                "أنت محلل محتوى. استخرج المفاهيم والمواضيع الرئيسية والعلاقات بينها "
-                "من النص المُقدَّم. أعد قائمة منظمة من النقاط فقط — لا شرح إضافي."
-            )
-            user_tmpl = (
-                "استخرج من النص التالي:\n"
-                "1. المواضيع الرئيسية (أقسام المحاضرة)\n"
-                "2. المفاهيم الفرعية لكل موضوع\n"
-                "3. العلاقات بين المفاهيم (مثال: A يؤدي إلى B، A هو نوع من B)\n\n"
-                "النص:\n{content}\n\n"
-                "أعد فقط قائمة نقاط منظمة:"
-            )
-        else:
-            system = (
-                "You are a content analyst. Extract the main topics, concepts, and "
-                "their relationships from the provided text. Return a structured "
-                "bullet-point list only — no additional explanation."
-            )
-            user_tmpl = (
-                "Extract from the following text:\n"
-                "1. Main topics (lecture sections)\n"
-                "2. Sub-concepts under each topic\n"
-                "3. Relationships between concepts (e.g., A leads to B, A is a type of B)\n\n"
-                "Text:\n{content}\n\n"
-                "Return ONLY a structured bullet-point list:"
-            )
-
-        chat_history = [
-            self._llm.construct_prompt(
-                prompt=system, role=self._llm.enums.SYSTEM.value
-            )
-        ]
+        system = self._template_parser.get("rag", "diagram_concept_system")
+        chat_history = [self._llm.construct_prompt(prompt=system, role=self._llm.enums.SYSTEM.value)]
 
         all_concepts: list[str] = []
         for i, batch in enumerate(batches, 1):
             try:
+                user_prompt = self._template_parser.get("rag", "diagram_concept_user", {"content": batch})
                 result = self._llm.generate_text(
-                    prompt=user_tmpl.format(content=batch),
+                    prompt=user_prompt, 
                     chat_history=chat_history,
-                    max_output_tokens=_CONCEPT_MAX_TOKENS,
+                    max_output_tokens=800
                 )
                 if result:
                     all_concepts.append(f"--- Part {i} ---\n{result.strip()}")
@@ -185,44 +155,8 @@ class DiagramAgent:
     # ------------------------------------------------------------------
 
     def _generate_mermaid(self, concepts_text: str) -> Optional[str]:
-        if self._language == "ar":
-            system = (
-                "أنت خبير في إنشاء مخططات Mermaid. مهمتك تحويل قوائم المفاهيم "
-                "والعلاقات إلى كود Mermaid صحيح يمثل هيكل المحاضرة بصرياً. "
-                "أعد كود Mermaid فقط — لا شيء آخر."
-            )
-            user_prompt = (
-                "حوّل قائمة المفاهيم والعلاقات التالية إلى مخطط Mermaid من النوع flowchart TD.\n\n"
-                "القواعد:\n"
-                "- ابدأ بـ: graph TD\n"
-                "- استخدم معرّفات قصيرة للعقد (A, B, C, ...) مع تسميات واضحة بين قوسين مربعين\n"
-                "- إذا كانت التسمية تحتوي على مسافات أو أحرف خاصة، ضعها بين علامتي اقتباس\n"
-                "- استخدم --> للعلاقات العادية\n"
-                "- استخدم -->|نص| للعلاقات التي تحتاج وصفاً\n"
-                "- أضف subgraph للمجموعات المنطقية (أقسام المحاضرة)\n"
-                "- لا تضع أي نص قبل graph TD أو بعد آخر سطر\n\n"
-                f"قائمة المفاهيم:\n{concepts_text}\n\n"
-                "كود Mermaid:"
-            )
-        else:
-            system = (
-                "You are a Mermaid diagram expert. Your task is to convert concept "
-                "lists and relationships into valid Mermaid code that visually "
-                "represents the lecture structure. Return ONLY Mermaid code — nothing else."
-            )
-            user_prompt = (
-                "Convert the following concept list and relationships into a Mermaid flowchart TD diagram.\n\n"
-                "Rules:\n"
-                "- Start with: graph TD\n"
-                "- Use short node IDs (A, B, C, ...) with clear labels in square brackets\n"
-                "- If a label contains spaces or special chars, wrap it in double quotes\n"
-                "- Use --> for standard relationships\n"
-                "- Use -->|label| for labelled relationships\n"
-                "- Use subgraph for logical groups (lecture sections)\n"
-                "- Do NOT put any text before 'graph TD' or after the last line\n\n"
-                f"Concept list:\n{concepts_text}\n\n"
-                "Mermaid code:"
-            )
+        system = self._template_parser.get("rag", "diagram_mermaid_system")
+        user_prompt = self._template_parser.get("rag", "diagram_mermaid_user", {"concepts_text": concepts_text})
 
         chat_history = [
             self._llm.construct_prompt(

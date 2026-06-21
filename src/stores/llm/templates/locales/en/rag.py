@@ -240,6 +240,72 @@ summary_batch_footer_prompt = Template("\n".join([
     "Begin immediately with the notes — no preamble, no closing remarks.",
 ]))
 
-smalltalk_prompt = Template("You are a friendly, helpful AI assistant. The user just said something casual or a greeting. Respond naturally, briefly, and politely.\n\nUser: $query\nResponse:")
+summary_intermediate_merge_prompt = Template(
+    "You are merging two sets of detailed lecture notes into one combined set.\n"
+    "Preserve ALL content - do not drop any definitions, formulas, or steps. Remove duplicate paragraphs only.\n\n"
+    "$notes_text\n\nMerged notes:"
+)
 
-router_system_prompt = Template("You are an intent classification system for an educational AI Assistant (RAG application)...\n(ضع نص الـ Router هنا)")
+smalltalk_prompt = Template(
+    "You are a friendly, helpful AI assistant. Respond naturally, briefly, and politely.\n\n"
+    "User: $query\nResponse:"
+)
+
+router_system_prompt = Template(
+    "You are an intent classification system for an educational AI Assistant (RAG application).\n"
+    "Classify the user query into ONE of these categories: 'retrieval', 'reasoning', 'multimodal', 'memory', or 'small_talk'.\n"
+    "CRITICAL: Return ONLY a valid JSON object. Do NOT wrap it in ```json ... ``` markdown blocks.\n"
+    'Format: {"intent": "category_name", "confidence": 0.95}'
+)
+
+router_user_prompt = Template("Query: $query")
+
+vision_analysis_system_prompt = Template(
+    "You are an expert academic AI assistant analyzing a lecture slide or document page.\n"
+    "1. Extract ALL visible text with high accuracy.\n"
+    "2. If there are diagrams, tables, or flowcharts, describe them clearly and completely using text (ASCII art is allowed for simple diagrams).\n"
+    "3. Identify the main topic and key points.\n"
+    "4. If the user asks a specific question, use the extracted content to answer it.\n"
+    "5. If the content is insufficient to answer, say so.\n"
+    "6. Be concise but thorough.\n\n"
+)
+
+vision_analysis_footer_prompt = Template(
+    "Analyze the document content above and answer the following question:\n\n"
+    "Question: $query\n\n"
+    "Answer:"
+)
+
+diagram_concept_system = Template(
+    "You are a content analyst. Extract the main topics, sub-concepts, and their relationships from the text. "
+    "Return ONLY a structured bullet-point list."
+)
+
+diagram_concept_user = Template(
+    "Extract:\n1. Main topics\n2. Sub-concepts\n3. Relationships (e.g., A leads to B)\n\n"
+    "Text:\n$content\n\nReturn ONLY a structured bullet-point list:"
+)
+
+diagram_mermaid_system = Template(
+    "You are a Mermaid diagram expert. Convert concept lists into valid Mermaid 'flowchart TD' code. "
+    "Return ONLY Mermaid code. No explanations, no markdown blocks."
+)
+
+diagram_mermaid_user = Template(
+    "Convert this list into a Mermaid flowchart TD.\n"
+    "- Start with: graph TD\n"
+    "- Use short node IDs (A, B) with labels in brackets: A[Label]\n"
+    "- Wrap special chars in quotes: A[\"Complex Label\"]\n\n"
+    "Concepts:\n$concepts_text\n\nMermaid code:"
+)
+
+instruction_summary = Template("**INSTRUCTION:** Provide a complete, structured lecture summary of the content below.")
+instruction_quiz = Template("**INSTRUCTION:** Generate the quiz questions based on the content below.")
+instruction_qa = Template(
+    "**Q&A INSTRUCTIONS:**\n"
+    "1. Find the answer in the Reference Material below.\n"
+    "2. Explain in depth: intuition first, technical details, worked example.\n"
+    "3. For equations, explain what every symbol means in plain language.\n"
+    "4. Compare with related concepts.\n"
+    "5. If the answer is not in the material, explicitly state that."
+)
