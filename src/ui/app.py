@@ -38,6 +38,10 @@ def _init_state():
         # Diagram state
         "diagram_data":        None,
         "show_diagram":        False,
+        # Walkthrough state
+        "wt_active":           False,
+        "wt_slide_index":      1,
+        "wt_state":            "IDLE", # States: IDLE, LECTURING, WAITING_FOR_ACTION
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -47,7 +51,6 @@ _init_state()
 
 SESSION_ID = st.session_state.session_id
 PROJECT_ID = SESSION_ID   # backend project namespace
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Backend helpers
@@ -302,7 +305,7 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Interactive Quiz (new Feature 1) ─────────────────────────────────
+    # ── Interactive Quiz ─────────────────────────────────
     st.subheader("🎮 Interactive Quiz")
     st.caption("Answer questions one-by-one with hints and explanations.")
     iq_num_questions = st.number_input(
@@ -332,7 +335,7 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Diagram (new Feature 2) ──────────────────────────────────────────
+    # ── Diagram ──────────────────────────────────────────
     st.subheader("🗺️ Lecture Diagram")
     st.caption("Visual concept map of the entire lecture.")
     diagram_btn = st.button(
@@ -341,7 +344,29 @@ with st.sidebar:
         disabled=not st.session_state.is_ready,
     )
 
-    # ── Napkin visualisation ──────────────────────────────────────────────
+# ── Auto Walkthrough ──────────────────────────────────────────
+    st.subheader("▶️ Auto Walkthrough")
+    st.caption("Let the AI explain the lecture slide-by-slide.")
+    
+    wt_cols = st.columns([4, 1])
+    with wt_cols[0]:
+        btn_label = "Resume Walkthrough" if st.session_state.wt_slide_index > 1 else "Start Walkthrough"
+        walkthrough_btn = st.button(
+            btn_label,
+            use_container_width=True,
+            disabled=not st.session_state.is_ready,
+            type="primary"
+        )
+    with wt_cols[1]:
+        reset_wt_btn = st.button(
+            "🔄", 
+            help="Restart from Slide 1",
+            use_container_width=True, 
+            disabled=not st.session_state.is_ready
+        )
+    st.divider()
+
+    # ── Napkin visualisation (تم إرجاعه هنا) ──────────────────────────────
     st.subheader("🎨 Visualize (Napkin AI)")
     vis_options = {
         "Mind Map":              "Mind Map",
@@ -423,7 +448,6 @@ with st.expander(
     if uploaded_files and not st.session_state.is_ready:
         if st.button("⚡ Upload & Process", type="primary", use_container_width=True):
             
-            # 1. إنشاء مكان لعرض الحالة وشريط التحميل
             status_text = st.empty()
             progress_bar = st.progress(0)
 
@@ -432,7 +456,6 @@ with st.expander(
             total_files = len(uploaded_files)
 
             for i, f in enumerate(uploaded_files):
-                # ── مرحلة الرفع (Uploading) ──
                 status_text.info(f"📤 Uploading: {f.name}...")
                 upload_res = _upload_file(f)
 
@@ -440,10 +463,7 @@ with st.expander(
                     file_id = upload_res["file_id"]
                     new_assets.append({"asset_name": f.name, "asset_id": file_id})
 
-                    # ── مرحلة التقطيع (Chunking) ──
                     status_text.warning(f"✂️ Chunking: {f.name}...")
-                    
-                    # تحديث شريط التحميل (الرفع والتقطيع يمثلون 50% من العملية)
                     progress_bar.progress(int(((i + 0.5) / total_files) * 50))
 
                     if not _process_file(file_id):
@@ -454,7 +474,6 @@ with st.expander(
                     break
 
             if all_success:
-                # ── مرحلة التحويل والحفظ (Embedding & Indexing) ──
                 status_text.info("🧮 Embedding & 📥 Indexing into Vector DB...")
                 progress_bar.progress(75)
 
@@ -463,7 +482,7 @@ with st.expander(
                     status_text.success("✅ **Lectures processed and indexed successfully! You can now start chatting.**")
                     st.session_state.uploaded_asset_ids = new_assets
                     st.session_state.is_ready = True
-                    time.sleep(1.5) # وقت قصير عشان المستخدم يشوف رسالة النجاح
+                    time.sleep(1.5)
                     st.rerun()
                 else:
                     status_text.error("❌ Failed during the Embedding/Indexing phase.")
@@ -486,7 +505,7 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"], unsafe_allow_html=True)
 
-        # Citations / Sources (item 8)
+        # Citations / Sources
         citations = msg.get("citations") or []
         if citations:
             with st.expander("📌 Sources", expanded=False):
@@ -497,13 +516,6 @@ for msg in st.session_state.chat_history:
                     if cit.get("section"):
                         parts.append(f"*{cit['section']}*")
                     st.markdown("- " + " · ".join(parts))
-
-        # Agent trace (debug)
-        if msg.get("agent_trace"):
-            with st.expander("🔍 Agent trace", expanded=False):
-                for step in msg["agent_trace"]:
-                    st.markdown(f"- `{step}`")
-
 
 # ── Sidebar actions (summary / quiz / diagram) ───────────────────────────────
 if sum_btn:
@@ -562,8 +574,92 @@ if diagram_btn:
         st.error("Failed to generate diagram. Please try again.")
 
 
+# ==============================================================================
+# Lecture Walkthrough - State Machine (CLEANED UP & FIXED)
+# ==============================================================================
+
+# 1. User clicks Start/Resume from sidebar
+if walkthrough_btn:
+    st.session_state.wt_active = True
+    # لاحظ أننا مسحنا السطر الذي يرجع الـ index إلى 1 هنا لكي يكمل من مكانه
+    st.session_state.wt_state = "LECTURING"
+    st.rerun()
+
+# 1.B User clicks Restart (🔄) from sidebar
+if reset_wt_btn:
+    st.session_state.wt_active = True
+    st.session_state.wt_slide_index = 1  # تصفير العداد فقط عند الضغط على زر الإعادة
+    st.session_state.wt_state = "LECTURING"
+    st.rerun()
+
+# 2. State Engine Execution
+if st.session_state.get("wt_active"):
+    
+    st.markdown("---")
+    st.info(f"👨‍🏫 **Interactive Walkthrough Mode Active** - Slide {st.session_state.wt_slide_index}")
+
+    # STATE A: LECTURING (Fetch from Backend)
+    if st.session_state.wt_state == "LECTURING":
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            full_text = ""
+            payload = {
+                "query": "walkthrough", 
+                "project_id": PROJECT_ID,
+                "session_id": SESSION_ID,
+                "asset_ids": selected_asset_ids,
+                "image_paths": []
+            }
+            
+            try:
+                # Passing slide_index correctly
+                url = f"{API_URL}/v1/nlp/walkthrough/stream/{PROJECT_ID}?slide_index={st.session_state.wt_slide_index}"
+                with requests.post(url, json=payload, stream=True) as resp:
+                    if resp.ok:
+                        for raw_line in resp.iter_lines():
+                            if raw_line:
+                                line = raw_line.decode("utf-8")
+                                if line.startswith("data: "):
+                                    token = line[6:]
+                                    if token == "[DONE]":
+                                        break
+                                    full_text += token.replace("\\n", "\n")
+                                    placeholder.markdown(full_text + "▌")
+                        placeholder.markdown(full_text)
+                        
+                        # Save response
+                        st.session_state.chat_history.append({"role": "assistant", "content": full_text})
+                        
+                        # Transition state
+                        st.session_state.wt_state = "WAITING_FOR_ACTION"
+                        st.rerun()
+                    else:
+                        st.error("Error fetching slide.")
+                        st.session_state.wt_active = False
+            except Exception as e:
+                st.error(f"Error: {e}")
+                st.session_state.wt_active = False
+
+    # STATE B: WAITING_FOR_ACTION (Show interactive buttons)
+    elif st.session_state.wt_state == "WAITING_FOR_ACTION":
+        st.markdown("### How would you like to proceed?")
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        if col1.button("➡️ Continue", use_container_width=True, type="primary"):
+            st.session_state.wt_slide_index += 1
+            st.session_state.wt_state = "LECTURING"
+            st.rerun()
+            
+        if col2.button("🛑 Stop Walkthrough", use_container_width=True):
+            st.session_state.wt_active = False
+            st.session_state.wt_state = "IDLE"
+            st.rerun()
+            
+        st.caption("Or simply type your question in the chat box below to ask about this slide!")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# Interactive Quiz view (replaces chat when active)
+# Interactive Quiz view
 # ══════════════════════════════════════════════════════════════════════════════
 
 if st.session_state.quiz_active:
@@ -575,7 +671,6 @@ if st.session_state.quiz_active:
     st.markdown("---")
 
     if idx >= total:
-        # ── Final result screen ──────────────────────────────────────────
         st.subheader(f"🏁 Quiz Results  |  Final Score: {score}/{total}")
         st.progress(100)
         
@@ -622,7 +717,6 @@ if st.session_state.quiz_active:
                 st.rerun()
 
     else:
-        # ── Current question ─────────────────────────────────────────────
         st.subheader(f"🎮 Interactive Quiz  —  Question {idx + 1} of {total}  |  Score: {score}/{total}")
         st.progress(int(idx / total * 100))
         
@@ -639,12 +733,10 @@ if st.session_state.quiz_active:
                 with st.expander("💡 Show Hint", expanded=False):
                     st.info(q["hint"])
 
-            # Show options as clickable buttons
             option_labels = ["A", "B", "C", "D"]
             for i, opt in enumerate(q["options"][:4]):
                 label = f"**{option_labels[i]}.** {opt}"
                 if st.button(label, key=f"opt_{qid}_{i}", use_container_width=True):
-                    # Check answer
                     feedback = _check_answer(q, opt)
                     if feedback:
                         is_correct = feedback.get("correct", False)
@@ -657,7 +749,6 @@ if st.session_state.quiz_active:
                             st.session_state.quiz_score += 1
                         st.rerun()
         else:
-            # Show result for this question
             ans_data = st.session_state.quiz_answers[qid]
             feedback = ans_data.get("feedback", {})
 
@@ -683,12 +774,11 @@ if st.session_state.quiz_active:
                     st.session_state.quiz_index += 1
                     st.rerun()
 
-    # Block the rest of the page while quiz is active
     st.stop()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Diagram view (shown as a collapsible section above chat)
+# Diagram view
 # ══════════════════════════════════════════════════════════════════════════════
 
 if st.session_state.show_diagram and st.session_state.diagram_data:
@@ -696,7 +786,6 @@ if st.session_state.show_diagram and st.session_state.diagram_data:
     with st.expander(f"🗺️ Lecture Diagram: **{diag.get('title', 'Concept Map')}**", expanded=True):
         mermaid_code = diag.get("content", "")
 
-        # Render Mermaid via an HTML component with Mermaid.js CDN
         mermaid_html = f"""
         <div class="mermaid" style="background:#fff; padding:16px; border-radius:8px;">
         {mermaid_code}
@@ -706,7 +795,6 @@ if st.session_state.show_diagram and st.session_state.diagram_data:
         """
         st.components.v1.html(mermaid_html, height=500, scrolling=True)
 
-        # Show raw Mermaid code toggle
         if st.checkbox("📋 Show raw Mermaid code", key="show_raw_mermaid"):
             st.code(mermaid_code, language="text")
 
@@ -732,7 +820,6 @@ if user_input:
             asset_ids=selected_asset_ids,
         )
 
-    # Fetch citations from the non-streaming endpoint in the background
     citations = _fetch_citations(
         query=user_input,
         asset_ids=selected_asset_ids,

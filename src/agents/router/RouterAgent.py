@@ -36,8 +36,9 @@ class RouterAgent(BaseAgent):
         Accepted but not used in the current heuristic implementation.
     """
 
-    def __init__(self, llm_provider) -> None:
+    def __init__(self, llm_provider, template_parser) -> None:
         self._llm_provider = llm_provider
+        self._template_parser = template_parser
 
     # ------------------------------------------------------------------
     # BaseAgent interface

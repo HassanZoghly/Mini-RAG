@@ -82,6 +82,7 @@ class GraphFactory:
         # -- Instantiate all agents -------------------------------------
         router_agent = RouterAgent(
             llm_provider=generation_client,
+            template_parser=template_parser,
         )
 
         retrieval_agent = RetrievalAgent(

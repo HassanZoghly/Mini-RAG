@@ -3,6 +3,7 @@ from models.db_schemes import Project, DataChunk
 from stores.llm.LLMEnums import DocumentTypeEnum
 from typing import List
 import json
+import asyncio
 
 class NLPController(BaseController):
 
@@ -303,3 +304,48 @@ class NLPController(BaseController):
             chat_history=chat_history,
         ):
             yield chunk
+    
+    async def generate_single_slide_walkthrough_stream(self, chunk, previous_chunk, slide_index: int, total_slides: int):
+        """
+        Streams a walkthrough explanation for a SINGLE slide/chunk, 
+        incorporating the previous chunk's text for progressive context linking.
+        """
+        system_prompt = self.template_parser.get("rag", "lecture_walkthrough_system")
+        
+        chat_history = [
+            self.generation_client.construct_prompt(
+                prompt=system_prompt,
+                role=self.generation_client.enums.SYSTEM.value,
+            )
+        ]
+
+        def extract_text_and_meta(c):
+            if not c:
+                return "This is the very first slide of the lecture. No previous context.", {}
+            if hasattr(c, "chunk_text"):
+                return (c.chunk_text or "").strip(), (c.chunk_metadata or {})
+            return (c.get("text", "")).strip(), (c.get("metadata", {}))
+
+        current_text, current_meta = extract_text_and_meta(chunk)
+        prev_text, _ = extract_text_and_meta(previous_chunk) if slide_index > 1 else ("This is the introduction.", {})
+
+        page_num = current_meta.get("page", "Unknown")
+        
+        user_prompt = self.template_parser.get("rag", "lecture_walkthrough_user", {
+            "page_num": page_num,
+            "slide_content": current_text,
+            "previous_context": prev_text
+        })
+
+        header = f"### 📽️ Slide {slide_index} of {total_slides} (Page {page_num})\n\n"
+        yield header
+
+        try:
+            async for token in self.generation_client.generate_stream(
+                prompt=user_prompt,
+                chat_history=chat_history,
+                max_output_tokens=2000
+            ):
+                yield token
+        except Exception as exc:
+            yield f"\n*[Error explaining this section: {str(exc)}]*\n"

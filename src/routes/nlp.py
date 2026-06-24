@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, status, Request, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, status, Request, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from routes.schemes.nlp import PushRequest, SearchRequest, VisualizeRequest, AgentQueryRequest, AgentQueryResponse, MultimodalQueryResponse
 from agents.base import create_initial_state
@@ -640,3 +640,43 @@ async def get_agent_trace(request: Request, session_id: str):
     except Exception as e:
         logger.error(f"Agent trace error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@nlp_router.post("/walkthrough/stream/{project_id}")
+async def walkthrough_stream(
+    request: Request, 
+    project_id: str, 
+    query_request: AgentQueryRequest,
+    slide_index: int = Query(1) 
+):
+    project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
+    project = await project_model.get_project_or_create_one(project_id=project_id)
+
+    chunk_model = await ChunkModel.create_instance(db_client=request.app.db_client)
+    chunks = await chunk_model.get_all_chunks_ordered(
+        project_id=project.project_id,
+        asset_ids=query_request.asset_ids,
+        max_chunks=200
+    )
+
+    if not chunks or slide_index < 1 or slide_index > len(chunks):
+        return StreamingResponse((f"data: No content found for slide {slide_index}\\n\\ndata: [DONE]\\n\\n" for _ in range(1)), media_type="text/event-stream")
+
+    target_chunk = chunks[slide_index - 1]
+    previous_chunk = chunks[slide_index - 2] if slide_index > 1 else None
+    total_slides = len(chunks)
+
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+    nlp_controller.template_parser.set_language("en")
+
+    async def sse_generator():
+        async for chunk in nlp_controller.generate_single_slide_walkthrough_stream(target_chunk, previous_chunk, slide_index, total_slides):
+            escaped_chunk = chunk.replace("\n", "\\n")
+            yield f"data: {escaped_chunk}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(sse_generator(), media_type="text/event-stream")

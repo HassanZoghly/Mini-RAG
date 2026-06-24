@@ -123,6 +123,7 @@ async def generate_quiz(
 
         agent = QuizAgent(
             generation_client=request.app.generation_client,
+            template_parser=request.app.template_parser,
             language=body.language or "en",
             num_questions=body.num_questions or 10,
             difficulty=body.difficulty or "MEDIUM",

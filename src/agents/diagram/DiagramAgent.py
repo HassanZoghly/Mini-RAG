@@ -40,13 +40,15 @@ class DiagramAgent:
     Parameters
     ----------
     generation_client : LLM provider
+    template_parser   : Template parser instance
     language          : "en" | "ar"  (affects prompt language only;
                         Mermaid node labels are always in the lecture language)
     """
 
-    def __init__(self, generation_client, language: str = "en") -> None:
-        self._llm      = generation_client
-        self._language = language if language in ("ar", "en") else "en"
+    def __init__(self, generation_client, template_parser, language: str = "en") -> None:
+        self._llm             = generation_client
+        self._template_parser = template_parser
+        self._language        = language if language in ("ar", "en") else "en"
 
     # ------------------------------------------------------------------
     # Public API
