@@ -38,6 +38,9 @@ def _init_state():
         # Diagram state
         "diagram_data":        None,
         "show_diagram":        False,
+        # Imagine state
+        "imagine_data":        None,
+        "show_imagine":        False,
         # Walkthrough state
         "wt_active":           False,
         "wt_slide_index":      1,
@@ -210,6 +213,20 @@ def _generate_diagram(asset_ids: list, language: str) -> dict | None:
         st.error(f"Diagram request error: {exc}")
     return None
 
+def _generate_imagine(asset_ids: list, language: str) -> dict | None:
+    try:
+        resp = requests.post(
+            f"{API_URL}/v1/imagine/generate/{PROJECT_ID}",
+            json={"asset_ids": asset_ids, "language": language},
+            timeout=180,
+        )
+        if resp.ok:
+            return resp.json()
+        st.error(f"Imagine generation failed ({resp.status_code}): {resp.text[:200]}")
+    except Exception as exc:
+        st.error(f"Imagine request error: {exc}")
+    return None
+
 def _stream_summary(asset_ids: list, language: str) -> str:
     payload = {"asset_ids": asset_ids, "language": language}
     placeholder = st.empty()
@@ -340,6 +357,15 @@ with st.sidebar:
     st.caption("Visual concept map of the entire lecture.")
     diagram_btn = st.button(
         "Generate Diagram",
+        use_container_width=True,
+        disabled=not st.session_state.is_ready,
+    )
+
+    # ── Imagine ──────────────────────────────────────────
+    st.subheader("🎨 Imagine")
+    st.caption("Generate a visual educational poster.")
+    imagine_btn = st.button(
+        "Generate Imagine",
         use_container_width=True,
         disabled=not st.session_state.is_ready,
     )
@@ -573,6 +599,19 @@ if diagram_btn:
     else:
         st.error("Failed to generate diagram. Please try again.")
 
+if imagine_btn:
+    with st.spinner("Generating visual educational poster… ⏳"):
+        imagine_data = _generate_imagine(
+            asset_ids=selected_asset_ids,
+            language=lang_code,
+        )
+    if imagine_data and imagine_data.get("content"):
+        st.session_state.imagine_data  = imagine_data
+        st.session_state.show_imagine  = True
+        st.rerun()
+    else:
+        st.error("Failed to generate infographic. Please try again.")
+
 
 # ==============================================================================
 # Lecture Walkthrough - State Machine (CLEANED UP & FIXED)
@@ -800,6 +839,22 @@ if st.session_state.show_diagram and st.session_state.diagram_data:
 
         if st.button("✖ Close Diagram", key="close_diag"):
             st.session_state.show_diagram = False
+            st.rerun()
+
+    st.markdown("---")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Imagine view
+# ══════════════════════════════════════════════════════════════════════════════
+
+if st.session_state.show_imagine and st.session_state.imagine_data:
+    img_data = st.session_state.imagine_data
+    with st.expander(f"🎨 Educational Poster: **{img_data.get('title', 'Lecture Poster')}**", expanded=True):
+        html_code = img_data.get("content", "")
+        st.components.v1.html(html_code, height=900, scrolling=True)
+
+        if st.button("✖ Close Poster", key="close_imagine"):
+            st.session_state.show_imagine = False
             st.rerun()
 
     st.markdown("---")

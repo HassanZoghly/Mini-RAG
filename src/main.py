@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from routes import base, data, nlp, diagram, quiz  # <-- تم إضافة diagram و quiz
+from routes import base, data, nlp, diagram, quiz, imagine
 from helpers.config import get_settings
 from stores.llm.LLMProviderFactory import LLMProviderFactory
 from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
@@ -66,4 +66,5 @@ app.include_router(base.base_router)
 app.include_router(data.data_router)
 app.include_router(nlp.nlp_router)
 app.include_router(diagram.diagram_router)  
+app.include_router(imagine.imagine_router)
 app.include_router(quiz.quiz_router)        

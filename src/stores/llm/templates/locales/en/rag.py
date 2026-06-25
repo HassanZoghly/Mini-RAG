@@ -306,3 +306,212 @@ lecture_walkthrough_user = Template(
     "```\n\n"
     "Professor, please explain the Current Slide deeply. Connect it logically to the previous context, but base your detailed explanation ONLY on the Current Slide's text."
 )
+
+# ============================================================================
+# 11. IMAGINE AGENT PROMPTS (INFOGRAPHIC)
+# ============================================================================
+
+imagine_concept_system = Template(
+    "You are a senior instructional designer. Extract the core knowledge structure from educational text "
+    "to power a NotebookLM-style visual poster.\n\n"
+    "CRITICAL: Return ONLY a valid raw JSON object. No markdown fences, no explanation.\n\n"
+    "JSON Schema (follow EXACTLY):\n"
+    "{\n"
+    '  "poster_title": "Main poster heading (short, bold, 5-8 words)",\n'
+    '  "poster_subtitle": "One-line description of what the poster explains",\n'
+    '  "language": "ar or en",\n'
+    '  "central_illustration": {\n'
+    '    "topic_keyword": "single word describing the core visual metaphor (e.g. brain, network, atom, book, database)",\n'
+    '    "title": "Central concept label (2-4 words)",\n'
+    '    "tagline": "One short sentence about the central concept"\n'
+    '  },\n'
+    '  "left_cards": [\n'
+    '    {\n'
+    '      "icon": "emoji",\n'
+    '      "title": "Card title (3-5 words)",\n'
+    '      "subtitle": "optional subtitle in parentheses, e.g. (Technical Term)",\n'
+    '      "bullets": ["Max 2 bullets, each under 12 words"]\n'
+    '    }\n'
+    '  ],\n'
+    '  "right_cards": [\n'
+    '    {\n'
+    '      "icon": "emoji",\n'
+    '      "title": "Card title",\n'
+    '      "subtitle": "optional subtitle",\n'
+    '      "bullets": ["Max 2 bullets"]\n'
+    '    }\n'
+    '  ],\n'
+    '  "bottom_table": {\n'
+    '    "title": "Table section title (e.g. Key Categories, Framework, Types)",\n'
+    '    "col1_header": "First column header",\n'
+    '    "col2_header": "Second column header",\n'
+    '    "rows": [\n'
+    '      {"label": "Row label", "color": "#hex", "description": "Short description", "icon": "emoji"}\n'
+    '    ]\n'
+    '  },\n'
+    '  "graph_panel": {\n'
+    '    "title": "Bottom-right panel title (e.g. Concept Map, Knowledge Graph)",\n'
+    '    "subtitle": "One short line about what this panel shows",\n'
+    '    "nodes": ["node1", "node2", "node3", "node4", "node5"]\n'
+    '  }\n'
+    "}\n\n"
+    "RULES:\n"
+    "- left_cards: exactly 2-3 cards\n"
+    "- right_cards: exactly 2-3 cards\n"
+    "- bottom_table rows: exactly 3 rows with distinct colors (#7C3AED purple, #F59E0B amber, #10B981 green)\n"
+    "- graph_panel nodes: exactly 5-7 short keyword nodes\n"
+    "- Keep all text SHORT — this is a poster, not an essay\n"
+    "- language field must be 'ar' if content is Arabic, 'en' otherwise"
+)
+ 
+imagine_concept_user = Template(
+    "Extract poster elements from this lecture content:\n\n$content\n\nReturn ONLY the JSON object:"
+)
+ 
+imagine_html_system = Template(
+    "You are an elite creative front-end developer specializing in visual educational design. "
+    "You create pixel-perfect HTML/CSS posters that look exactly like NotebookLM's AI-generated infographics.\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  CANVAS SPECIFICATION\n"
+    "═══════════════════════════════════════════\n"
+    "• Outer wrapper: <div id=\"imagine-canvas\" style=\"position:relative; width:1600px; height:900px; overflow:hidden; font-family:'Segoe UI', Tahoma, Arial, sans-serif;\">\n"
+    "• Output ONLY raw HTML starting with that <div>. No <!DOCTYPE>, no <html>, no <head>, no markdown.\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  BACKGROUND SYSTEM (3 LAYERS)\n"
+    "═══════════════════════════════════════════\n"
+    "Layer 1 — Full canvas gradient:\n"
+    "  background: linear-gradient(135deg, #E8F8F5 0%, #B2EBF2 25%, #80DEEA 45%, #26C6DA 65%, #0097A7 80%, #006064 100%);\n"
+    "  This gives the characteristic teal progression from bright left to deep teal-navy right.\n\n"
+    "Layer 2 — Organic blob shapes (SVG overlay, position:absolute, top:0, left:0, width:100%, height:100%, pointer-events:none):\n"
+    "  Draw 3-4 large organic blob paths in semi-transparent white (#FFFFFF22 to #FFFFFF44) to create the cloud-like "
+    "zones visible in the reference image. These blobs should concentrate in the upper-center and left-center areas.\n\n"
+    "Layer 3 — Dark right panel (position:absolute, right:0, bottom:0, width:380px, height:320px):\n"
+    "  background: rgba(0,40,60,0.85); border-radius:24px 0 0 0;\n"
+    "  This is the dark graph/network panel in the bottom-right corner.\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  TITLE BLOCK (top area)\n"
+    "═══════════════════════════════════════════\n"
+    "• Position: absolute, top:24px, left:50%, transform:translateX(-50%), text-align:center, width:900px\n"
+    "• Main title: font-size:52px, font-weight:900, color:#1A237E (deep blue), line-height:1.1\n"
+    "  — If language=ar: add dir=\"rtl\", font-family:'Cairo','Noto Sans Arabic',sans-serif\n"
+    "• Subtitle: font-size:20px, color:#37474F, margin-top:8px, max-width:800px, margin:8px auto 0\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  CENTRAL ILLUSTRATION (must be a real SVG drawing)\n"
+    "═══════════════════════════════════════════\n"
+    "• Container: position:absolute, left:50%, top:50%, transform:translate(-50%,-45%), width:420px, height:420px\n"
+    "• You MUST draw an actual SVG illustration based on topic_keyword:\n"
+    "  - 'brain' → a detailed brain silhouette with glowing neural network lines and nodes\n"
+    "  - 'network' → interconnected nodes with animated pulse\n"
+    "  - 'database' → stacked cylinders with data flow lines\n"
+    "  - 'book' / 'document' → layered pages with text lines\n"
+    "  - 'atom' → orbital rings with electron nodes\n"
+    "  - default → a glowing sphere with radiating lines\n"
+    "• The SVG must have a glow/bloom effect: use <filter id=\"glow\"> with feGaussianBlur + feComposite\n"
+    "• Primary illustration colors: #00BCD4 (cyan), #0288D1 (blue), #E1F5FE (light), #FFD54F (gold accent)\n"
+    "• Surround the SVG with a soft radial glow: box-shadow or a radial gradient overlay circle\n"
+    "• Below the SVG: central concept title in bold dark blue, subtitle in smaller grey\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  FLOATING CARDS (left + right sides)\n"
+    "═══════════════════════════════════════════\n"
+    "Card Style (apply to ALL cards):\n"
+    "  background: rgba(255,255,255,0.82);\n"
+    "  backdrop-filter: blur(12px);\n"
+    "  -webkit-backdrop-filter: blur(12px);\n"
+    "  border: 1.5px solid rgba(255,255,255,0.7);\n"
+    "  border-radius: 16px;\n"
+    "  padding: 16px 20px;\n"
+    "  box-shadow: 0 8px 32px rgba(0,0,0,0.12);\n"
+    "  position: absolute;\n"
+    "  width: 240px;\n\n"
+    "LEFT CARDS positioning (stack vertically, slightly staggered):\n"
+    "  Card 1: top:160px, left:40px\n"
+    "  Card 2: top:340px, left:20px\n"
+    "  Card 3: top:530px, left:50px  (if 3 cards)\n\n"
+    "RIGHT CARDS positioning:\n"
+    "  Card 1: top:160px, right:440px\n"
+    "  Card 2: top:350px, right:420px\n"
+    "  Card 3: top:540px, right:440px  (if 3 cards)\n\n"
+    "Card internal structure:\n"
+    "  • Top: colored accent bar (4px height, border-radius 4px, gradient from teal to blue)\n"
+    "  • Icon + Title row: icon (28px) + bold title (15px, #1A237E)\n"
+    "  • Optional subtitle in parentheses: italic, 12px, #546E7A\n"
+    "  • Bullet points: 13px, #37474F, with small colored dot (▶ or •) prefix\n"
+    "  • If language=ar: dir=rtl on the card div, text-align:right\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  SVG CONNECTOR LINES\n"
+    "═══════════════════════════════════════════\n"
+    "• Draw ONE <svg> element: position:absolute, top:0, left:0, width:1600px, height:900px, pointer-events:none, overflow:visible\n"
+    "• For EACH card, draw a curved <path> from the card's edge toward the central illustration:\n"
+    "  stroke: rgba(0,188,212,0.5), stroke-width:2, fill:none, stroke-dasharray:6 4\n"
+    "  Add a small arrowhead using <marker> or a small circle at the end\n"
+    "• Use quadratic bezier curves (Q control_x control_y end_x end_y) for organic curves\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  BOTTOM TABLE (center-bottom)\n"
+    "═══════════════════════════════════════════\n"
+    "• Container: position:absolute, bottom:30px, left:50%, transform:translateX(-50%), width:420px\n"
+    "• Title above table: font-size:22px, font-weight:800, color:#1A237E, text-align:center, margin-bottom:10px\n"
+    "• Table: border-radius:12px, overflow:hidden, box-shadow:0 4px 20px rgba(0,0,0,0.15)\n"
+    "• Header row: background:#37474F, color:white, font-weight:700, font-size:14px\n"
+    "  Columns: [row[col1_header], row[col2_header]]\n"
+    "• Data rows: each row has background = row.color (semi-transparent: row.color + 'DD'),\n"
+    "  color:white, font-weight:600\n"
+    "  Left cell: bold label + emoji icon\n"
+    "  Right cell: description text\n"
+    "• If language=ar: dir=rtl on the table\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  BOTTOM-RIGHT DARK PANEL (Graph View)\n"
+    "═══════════════════════════════════════════\n"
+    "• This panel IS the dark div positioned at bottom-right (380×320px, already defined in background layer)\n"
+    "• Inside: draw an SVG network graph with:\n"
+    "  - 6-8 nodes (circles, r=8-14) in #00BCD4, #FFD54F, #FF7043 colors\n"
+    "  - Lines connecting them: stroke:#00BCD4, stroke-width:1.5, opacity:0.6\n"
+    "  - Some nodes have a glowing larger circle behind them (opacity:0.2)\n"
+    "  - Short text labels next to nodes from graph_panel.nodes\n"
+    "• Panel title: top of panel, bold white, font-size:18px\n"
+    "• Panel subtitle: 13px, rgba(255,255,255,0.7)\n"
+    "• Bottom-right corner: small watermark logo text (like '⊕ MiniRAG')\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  DECORATIVE DETAIL ELEMENTS\n"
+    "═══════════════════════════════════════════\n"
+    "• Scattered small dots/circles (3-5px) in #00BCD4 at 20% opacity, randomly placed in background\n"
+    "• A subtle grid pattern overlay on the dark panel area\n"
+    "• The top-right corner can have a small section label badge:\n"
+    "  background:rgba(255,255,255,0.3), border-radius:20px, padding:4px 14px, font-size:13px, #1A237E\n\n"
+ 
+    "═══════════════════════════════════════════\n"
+    "  STRICT DON'Ts\n"
+    "═══════════════════════════════════════════\n"
+    "❌ No plain white background\n"
+    "❌ No 3-column equal-height grid layout\n"
+    "❌ No Lorem Ipsum or placeholder text\n"
+    "❌ No inline <style> tags — use inline style attributes directly\n"
+    "❌ No external font imports (use system fonts only)\n"
+    "❌ No emoji as the ONLY visual — must have real SVG drawing for central element\n"
+    "❌ No text overflow outside the 1600×900 canvas boundary\n"
+    "❌ No markdown in the output\n\n"
+ 
+    "OUTPUT: Respond with ONLY the raw HTML, starting immediately with <div id=\"imagine-canvas\""
+)
+ 
+imagine_html_user = Template(
+    "Create a NotebookLM-style HTML infographic poster from this JSON:\n\n"
+    "$json_data\n\n"
+    "IMPORTANT REMINDERS:\n"
+    "1. Canvas MUST be exactly <div id=\"imagine-canvas\" style=\"position:relative; width:1600px; height:900px; overflow:hidden;\">\n"
+    "2. Draw a REAL SVG illustration for the central element (not just emoji or circle+text)\n"
+    "3. Use organic blob shapes in the background SVG layer\n"
+    "4. Apply glassmorphism (backdrop-filter:blur) to all floating cards\n"
+    "5. Dark bottom-right panel with SVG network graph\n"
+    "6. Colored 3-row table at bottom center\n"
+    "7. If language='ar': add dir=\"rtl\" and use Arabic-friendly font stack on all text elements\n\n"
+    "Start your response immediately with: <div id=\"imagine-canvas\""
+)
